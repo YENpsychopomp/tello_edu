@@ -1,0 +1,5 @@
+-r requirements.txt
+# 只在開發 / 驗證時需要（不會裝進 Docker 映像）
+pytest==9.2.0
+httpx==0.28.1
+playwright==1.65.1

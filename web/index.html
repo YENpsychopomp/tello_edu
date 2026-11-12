@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Tello 地面站</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <defs>
+    <symbol id="i-ok" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7.5 12.5l3 3 6-6.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.2L22 20.5H2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 9.5v5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="17.6" r="1.3" fill="currentColor"/></symbol>
+    <symbol id="i-danger" viewBox="0 0 24 24"><path d="M8.2 2.5h7.6l5.7 5.7v7.6l-5.7 5.7H8.2l-5.7-5.7V8.2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8.8 8.8l6.4 6.4M15.2 8.8l-6.4 6.4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 11v6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="7.6" r="1.3" fill="currentColor"/></symbol>
+    <symbol id="i-pending" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 3"/><circle cx="12" cy="12" r="2" fill="currentColor"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M4 18a11 11 0 0 1 16 0M7 14.5a6.5 6.5 0 0 1 10 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="19" r="1.7" fill="currentColor"/><path d="M1.5 9.5a15.5 15.5 0 0 1 21 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-battery" viewBox="0 0 24 24"><rect x="2" y="7" width="18" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="20.5" y="10" width="2" height="4" rx="1" fill="currentColor"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 6.5V12l3.5 2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><rect x="3" y="15" width="3" height="5" rx="1" fill="currentColor"/><rect x="8" y="11" width="3" height="9" rx="1" fill="currentColor"/><rect x="13" y="7" width="3" height="13" rx="1" fill="currentColor"/><rect x="18" y="3" width="3" height="17" rx="1" fill="currentColor"/></symbol>
+    <symbol id="i-temp" viewBox="0 0 24 24"><path d="M10 4a2 2 0 0 1 4 0v9.5a4.5 4.5 0 1 1-4 0z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="17" r="2" fill="currentColor"/><path d="M12 9v6" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-speed" viewBox="0 0 24 24"><path d="M3.5 17a8.5 8.5 0 1 1 17 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 17l4.5-6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.6" fill="currentColor"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9.3 9.3a2.8 2.8 0 1 1 3.9 2.6c-.8.4-1.2 1-1.2 1.9v.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17.3" r="1.2" fill="currentColor"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-diag" viewBox="0 0 24 24"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-full" viewBox="0 0 24 24"><path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-takeoff" viewBox="0 0 24 24"><path d="M12 20V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 22h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-land" viewBox="0 0 24 24"><path d="M12 3v14M6 11l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 21h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-video" viewBox="0 0 24 24"><rect x="2" y="6" width="14" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 10.5l6-3.5v10l-6-3.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-photo" viewBox="0 0 24 24"><path d="M3 8h4l2-3h6l2 3h4v12H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13.5" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-rec" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="5" fill="currentColor"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></symbol>
+    <symbol id="i-emergency" viewBox="0 0 24 24"><path d="M12 2.5v9" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M6.3 6.2a8 8 0 1 0 11.4 0" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-gamepad" viewBox="0 0 24 24"><path d="M7 7h10a5 5 0 0 1 4.8 6.3l-1.2 4.4a2.3 2.3 0 0 1-4 .8L15 16.5H9l-1.6 2a2.3 2.3 0 0 1-4-.8l-1.2-4.4A5 5 0 0 1 7 7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7.5 10v4M5.5 12h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="11" r="1.2" fill="currentColor"/><circle cx="18" cy="13.2" r="1.2" fill="currentColor"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6 10h1M10 10h1M14 10h1M18 10h0M7 14h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-pilot" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 21a8 8 0 0 1 16 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M1.5 12S5.5 5 12 5s10.5 7 10.5 7-4 7-10.5 7S1.5 12 1.5 12z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-flip" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18.5 2.5v4.5H14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-sim" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 20h8M12 16v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="app" id="app">
+  <!-- ========== 上方狀態列：依重要性由左到右 ========== -->
+  <header class="topbar" role="banner">
+    <div class="stat stat-conn" id="stConn" data-level="danger">
+      <svg class="stat-icon"><use href="#i-danger"/></svg>
+      <div class="stat-body">
+        <span class="stat-label">連線</span>
+        <span class="stat-text" id="connText">本機程式未連線</span>
+        <span class="stat-sub" id="connSub">—</span>
+      </div>
+    </div>
+
+    <div class="stat stat-bat" id="stBat" data-level="none">
+      <svg class="stat-icon"><use href="#i-battery"/></svg>
+      <div class="stat-body">
+        <span class="stat-label">電量</span>
+        <span class="stat-key"><b id="batVal">--</b><small>%</small></span>
+      </div>
+      <div class="bat-side">
+        <div class="bat-bar" aria-hidden="true"><i id="batBar"></i></div>
+        <span class="stat-sub" id="batRemain">剩餘 --:--</span>
+      </div>
+    </div>
+
+    <div class="stat" id="stTime">
+      <svg class="stat-icon"><use href="#i-clock"/></svg>
+      <div class="stat-body">
+        <span class="stat-label">飛行時間</span>
+        <span class="stat-key"><b id="timeVal">00:00</b></span>
+      </div>
+    </div>
+
+    <div class="stat" id="stWifi" data-level="none">
+      <svg class="stat-icon"><use href="#i-wifi"/></svg>
+      <div class="stat-body">
+        <span class="stat-label">Wi-Fi 訊號</span>
+        <span class="stat-mid"><b id="wifiVal">--</b><small id="wifiText"></small></span>
+      </div>
+    </div>
+
+    <div class="stat" id="stTemp" data-level="none">
+      <svg class="stat-icon"><use href="#i-temp"/></svg>
+      <div class="stat-body">
+        <span class="stat-label">溫度</span>
+        <span class="stat-mid"><b id="tempVal">--</b><small>°C</small></span>
+      </div>
+    </div>
+
+    <div class="stat" id="stMode">
+      <svg class="stat-icon"><use href="#i-speed"/></svg>
+      <div class="stat-body">
+        <span class="stat-label">速度模式</span>
+        <span class="stat-mid"><b id="modeVal">一般</b><small id="modePct">60%</small></span>
+      </div>
+    </div>
+
+    <div class="topbar-spacer"></div>
+    <span class="badge badge-sim" id="simBadge" hidden><svg><use href="#i-sim"/></svg>模擬器</span>
+    <span class="badge" id="obsBadge" data-level="warn" hidden><svg><use href="#i-eye"/></svg>觀看模式</span>
+    <nav class="tools" aria-label="工具">
+      <button class="tool" id="btnHelp" title="按鍵說明（?／手把 View 鍵）"><svg><use href="#i-help"/></svg><span>說明</span></button>
+      <button class="tool" id="btnSettings" title="設定"><svg><use href="#i-settings"/></svg><span>設定</span></button>
+      <a class="tool" href="/diag" target="_blank" rel="noopener" title="診斷頁（另開分頁）"><svg><use href="#i-diag"/></svg><span>診斷</span></a>
+      <button class="tool" id="btnFull" title="全螢幕（F）"><svg><use href="#i-full"/></svg><span>全螢幕</span></button>
+    </nav>
+  </header>
+
+  <!-- ========== 中央 ========== -->
+  <main class="middle">
+    <aside class="side">
+      <section class="panel" id="preflight" aria-labelledby="pfTitle">
+        <h2 id="pfTitle">飛前檢查</h2>
+        <ul class="checklist" id="pfList"></ul>
+        <p class="pf-summary" id="pfSummary" data-level="warn"></p>
+      </section>
+      <section class="panel" id="rolePanel">
+        <h2>控制權</h2>
+        <p class="role-line" id="roleLine"></p>
+        <button class="btn btn-small" id="btnTakeover" hidden><svg><use href="#i-pilot"/></svg>接管控制</button>
+        <div class="kv"><span>輸入來源</span><b id="inputSrc">—</b></div>
+        <div class="kv flip-line" id="flipLine"><span><svg class="mini"><use href="#i-flip"/></svg>翻滾</span><b id="flipState">—</b></div>
+      </section>
+    </aside>
+
+    <section class="video-wrap">
+      <div class="video-frame" id="videoFrame">
+        <canvas id="videoCanvas" width="960" height="720" aria-label="Tello 鏡頭畫面"></canvas>
+        <img id="mjpeg" alt="" class="mjpeg-src">
+        <div class="video-placeholder" id="videoPlaceholder">
+          <svg><use href="#i-video"/></svg>
+          <p id="videoTip">按 <kbd>Y</kbd> 或「影像」開啟鏡頭畫面</p>
+        </div>
+
+        <div class="hud" id="hud" aria-hidden="true">
+          <div class="hud-alerts" id="hudAlerts"></div>
+          <div class="hud-heading"><span>航向</span><b id="hudYaw">---</b><small>°</small></div>
+          <svg class="horizon" viewBox="-160 -120 320 240">
+            <defs><clipPath id="hzClip"><circle r="92"/></clipPath></defs>
+            <g clip-path="url(#hzClip)">
+              <g id="hzRot">
+                <g id="hzPitch">
+                  <line x1="-400" y1="0" x2="400" y2="0" class="hz-line"/>
+                  <g class="hz-ladder">
+                    <line x1="-22" x2="22" y1="-30" y2="-30"/><text x="28" y="-26">10</text>
+                    <line x1="-34" x2="34" y1="-60" y2="-60"/><text x="40" y="-56">20</text>
+                    <line x1="-22" x2="22" y1="30" y2="30"/><text x="28" y="34">10</text>
+                    <line x1="-34" x2="34" y1="60" y2="60"/><text x="40" y="64">20</text>
+                  </g>
+                </g>
+              </g>
+            </g>
+            <circle r="92" class="hz-ring"/>
+            <path d="M-56 0h28l8 10 8-10 8 10 8-10h28" class="hz-plane"/>
+            <circle r="2.5" class="hz-dot"/>
+          </svg>
+          <div class="hud-col hud-left">
+            <div class="hud-read"><span>高度</span><b id="hudH">--</b><small>cm</small></div>
+            <div class="hud-read hud-small"><span>ToF</span><b id="hudTof">--</b><small>cm</small></div>
+          </div>
+          <div class="hud-col hud-right">
+            <div class="hud-read"><span>水平速度</span><b id="hudVh">-.-</b><small>m/s</small></div>
+            <div class="hud-read hud-small"><span>垂直速度</span><b id="hudVz">-.-</b><small>m/s</small></div>
+          </div>
+          <div class="hud-rec" id="hudRec" hidden><svg><use href="#i-rec"/></svg><span>REC</span><b id="recTime">00:00</b></div>
+          <div class="hud-safety" id="hudSafety" hidden></div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side">
+      <section class="panel" id="attPanel">
+        <h2>姿態與鏈路</h2>
+        <div class="kv"><span>俯仰 pitch</span><b id="attPitch">--</b></div>
+        <div class="kv"><span>橫滾 roll</span><b id="attRoll">--</b></div>
+        <div class="kv"><span>偏航 yaw</span><b id="attYaw">--</b></div>
+        <div class="kv"><span>氣壓高度</span><b id="attBaro">--</b></div>
+        <div class="kv"><span>指令 RTT</span><b id="linkRtt">--</b></div>
+        <div class="kv"><span>狀態封包</span><b id="linkState">--</b></div>
+        <div class="kv"><span>影像</span><b id="linkVideo">--</b></div>
+      </section>
+      <section class="panel panel-log">
+        <h2>事件紀錄</h2>
+        <ol class="log" id="eventLog" aria-live="polite"></ol>
+      </section>
+    </aside>
+  </main>
+
+  <!-- ========== 底部：搖桿視覺化＋主要動作 ========== -->
+  <footer class="bottombar">
+    <div class="stickbox" id="stickL">
+      <svg viewBox="-55 -55 110 110" class="stick">
+        <circle r="50" class="st-outer"/><circle r="6" class="st-dz" id="dzL"/>
+        <path d="M-50 0H50M0 -50V50" class="st-cross"/>
+        <circle r="9" class="st-dot" id="dotL"/>
+      </svg>
+      <div class="stick-info">
+        <span class="stick-title">左搖桿</span>
+        <div class="kv"><span>升降</span><b id="rcC">0</b></div>
+        <div class="kv"><span>轉向</span><b id="rcD">0</b></div>
+      </div>
+    </div>
+
+    <div class="actions" role="toolbar" aria-label="主要動作">
+      <button class="act act-takeoff" id="btnTakeoff"><svg><use href="#i-takeoff"/></svg><span>起飛</span><kbd>A</kbd></button>
+      <button class="act act-land" id="btnLand"><svg><use href="#i-land"/></svg><span>降落</span><kbd>B</kbd></button>
+      <button class="act" id="btnVideo" aria-pressed="false"><svg><use href="#i-video"/></svg><span>影像</span><kbd>Y</kbd></button>
+      <button class="act" id="btnPhoto"><svg><use href="#i-photo"/></svg><span>拍照</span><kbd>P</kbd></button>
+      <button class="act" id="btnRec" aria-pressed="false"><svg><use href="#i-rec"/></svg><span id="recLabel">錄影</span><kbd>R</kbd></button>
+      <div class="act-sep" aria-hidden="true"></div>
+      <button class="act act-emg" id="btnEmg" title="緊急停槳：長按 1 秒（手把 LB＋RB、鍵盤 Shift+Esc）">
+        <svg class="emg-ring" viewBox="0 0 44 44"><circle cx="22" cy="22" r="19" class="ring-bg"/><circle cx="22" cy="22" r="19" class="ring-fg" id="emgRing"/></svg>
+        <svg class="emg-icon"><use href="#i-emergency"/></svg>
+        <span>緊急停槳</span><small>長按 1 秒</small>
+      </button>
+    </div>
+
+    <div class="stickbox" id="stickR">
+      <svg viewBox="-55 -55 110 110" class="stick">
+        <circle r="50" class="st-outer"/><circle r="6" class="st-dz" id="dzR"/>
+        <path d="M-50 0H50M0 -50V50" class="st-cross"/>
+        <circle r="9" class="st-dot" id="dotR"/>
+      </svg>
+      <div class="stick-info">
+        <span class="stick-title">右搖桿</span>
+        <div class="kv"><span>前後</span><b id="rcB">0</b></div>
+        <div class="kv"><span>左右</span><b id="rcA">0</b></div>
+      </div>
+    </div>
+  </footer>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<div class="link-alarm" id="linkAlarm" hidden role="alert">
+  <div class="link-alarm-box">
+    <svg><use href="#i-danger"/></svg>
+    <div>
+      <strong id="alarmTitle">連線中斷</strong>
+      <p id="alarmText"></p>
+    </div>
+  </div>
+</div>
+<div class="haptic-flash" id="hapticFlash"></div>
+
+<!-- 按鍵說明 -->
+<dialog id="dlgHelp" class="dlg dlg-wide" aria-labelledby="helpTitle">
+  <header class="dlg-head"><h2 id="helpTitle">按鍵說明（Mode 2）</h2><button class="dlg-x" data-close aria-label="關閉">✕</button></header>
+  <div class="help-grid">
+    <svg class="pad-art" viewBox="-60 0 760 380" role="img" aria-label="Xbox 手把按鍵配置圖">
+      <g class="pad-body">
+        <path d="M170 92h300c58 0 98 38 112 96l26 108c10 42-30 72-62 48l-58-46H152l-58 46c-32 24-72-6-62-48l26-108c14-58 54-96 112-96z"/>
+      </g>
+      <g class="pad-shoulder">
+        <rect x="150" y="62" width="96" height="22" rx="10"/><text x="198" y="78">LB</text>
+        <rect x="394" y="62" width="96" height="22" rx="10"/><text x="442" y="78">RB</text>
+        <rect x="160" y="28" width="76" height="28" rx="10"/><text x="198" y="47">LT</text>
+        <rect x="404" y="28" width="76" height="28" rx="10"/><text x="442" y="47">RT</text>
+      </g>
+      <g class="pad-stick"><circle cx="196" cy="166" r="34"/><circle cx="196" cy="166" r="18"/></g>
+      <g class="pad-stick"><circle cx="388" cy="244" r="34"/><circle cx="388" cy="244" r="18"/></g>
+      <g class="pad-dpad"><path d="M240 222h24v-24h24v24h24v24h-24v24h-24v-24h-24z"/></g>
+      <g class="pad-btn">
+        <circle cx="452" cy="196" r="15" class="b-a"/><text x="452" y="201">A</text>
+        <circle cx="484" cy="166" r="15" class="b-b"/><text x="484" y="171">B</text>
+        <circle cx="420" cy="166" r="15" class="b-x"/><text x="420" y="171">X</text>
+        <circle cx="452" cy="136" r="15" class="b-y"/><text x="452" y="141">Y</text>
+      </g>
+      <g class="pad-small"><rect x="276" y="150" width="26" height="16" rx="8"/><rect x="338" y="150" width="26" height="16" rx="8"/>
+        <text x="289" y="186">View</text><text x="351" y="186">Menu</text></g>
+      <g class="pad-callout">
+        <path d="M196 132V108H-50"/><text x="-50" y="100" class="co-l">左搖桿：升降／轉向</text>
+        <path d="M388 278v40H700"/><text x="700" y="312" class="co-r">右搖桿：前後／左右</text>
+        <path d="M150 73H-50"/><text x="-50" y="66" class="co-l">LB＋RB 同按：緊急停槳</text>
+        <path d="M160 42H-50"/><text x="-50" y="36" class="co-l">LT 按住：精細 30%</text>
+        <path d="M480 42H700"/><text x="700" y="36" class="co-r">RT 按住：全速 100%</text>
+        <path d="M490 73H700"/><text x="700" y="66" class="co-r">（與 LB 同按＝緊急停槳）</text>
+        <path d="M467 196h28v-10h205"/><text x="700" y="180" class="co-r">A 起飛</text>
+        <path d="M499 166H700"/><text x="700" y="158" class="co-r">B 降落</text>
+        <path d="M452 121v-11H700"/><text x="700" y="104" class="co-r">Y 影像開／關</text>
+        <path d="M276 270v48H-50"/><text x="-50" y="312" class="co-l">按住 X ＋ 十字鍵：翻滾</text>
+        <path d="M289 158v-38"/><text x="289" y="114">View：開關說明</text>
+      </g>
+    </svg>
+    <div class="help-cols">
+      <section>
+        <h3><svg class="mini"><use href="#i-gamepad"/></svg>手把</h3>
+        <ul class="keys">
+          <li><kbd>A</kbd> 起飛（需通過飛前檢查）</li>
+          <li><kbd>B</kbd> 降落（立即送出，不排隊）</li>
+          <li><kbd>Y</kbd> 影像開／關</li>
+          <li><kbd>X</kbd>＋十字鍵 翻滾（電量 ≥ 50%）</li>
+          <li><kbd>LT</kbd> 精細 30%　<kbd>RT</kbd> 全速 100%　放開＝一般 60%</li>
+          <li><kbd>LB</kbd>＋<kbd>RB</kbd> 緊急停槳 —— <em>馬達立刻停止，會直接掉下來</em></li>
+          <li><kbd>View</kbd> 開關這個說明</li>
+        </ul>
+      </section>
+      <section>
+        <h3><svg class="mini"><use href="#i-keyboard"/></svg>鍵盤備援</h3>
+        <ul class="keys">
+          <li><kbd>W</kbd><kbd>S</kbd> 前／後　<kbd>A</kbd><kbd>D</kbd> 左／右</li>
+          <li><kbd>↑</kbd><kbd>↓</kbd> 升／降　<kbd>←</kbd><kbd>→</kbd> 轉向</li>
+          <li><kbd>T</kbd> 起飛　<kbd>L</kbd> 降落　<kbd>V</kbd> 影像</li>
+          <li><kbd>P</kbd> 拍照　<kbd>R</kbd> 錄影　<kbd>F</kbd> 全螢幕</li>
+          <li><kbd>Shift</kbd>＋<kbd>Esc</kbd> 緊急停槳</li>
+          <li><kbd>?</kbd> 開關說明</li>
+        </ul>
+        <p class="note">安全機制：控制頁 0.5 秒沒送出控制就自動懸停，8 秒自動降落。切換到其他分頁也會觸發。</p>
+      </section>
+    </div>
+  </div>
+</dialog>
+
+<!-- 設定 -->
+<dialog id="dlgSettings" class="dlg" aria-labelledby="setTitle">
+  <header class="dlg-head"><h2 id="setTitle">設定</h2><button class="dlg-x" data-close aria-label="關閉">✕</button></header>
+  <form method="dialog" class="settings" id="settingsForm">
+    <label class="field"><span>搖桿死區 <b id="setDzVal"></b></span>
+      <input type="range" name="deadzone" min="0.04" max="0.30" step="0.01"></label>
+    <label class="field"><span>Expo 曲線 <b id="setExpoVal"></b></span>
+      <input type="range" name="expo" min="0" max="0.8" step="0.05">
+      <small>0 = 線性；數值越大，中間越細膩、推到底一樣是 100%</small></label>
+    <svg class="curve" viewBox="0 0 100 100" aria-hidden="true"><path id="curvePath"/><path d="M0 100L100 0" class="curve-ref"/></svg>
+    <label class="field"><span>溫度警告門檻 <b id="setTempVal"></b></span>
+      <input type="range" name="tempWarn" min="60" max="95" step="1"></label>
+    <label class="field"><span>影像解碼</span>
+      <select name="videoMode">
+        <option value="auto">自動（WebCodecs，失敗時改 MJPEG）</option>
+        <option value="webcodecs">只用 WebCodecs（低延遲）</option>
+        <option value="mjpeg">只用 MJPEG（ffmpeg 備援）</option>
+      </select></label>
+    <label class="check"><input type="checkbox" name="vibration"> 手把震動回饋</label>
+    <label class="check"><input type="checkbox" name="keyboard"> 啟用鍵盤控制</label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="btnResetSettings">恢復預設</button>
+      <button class="btn btn-primary" value="ok">完成</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 接管控制確認 -->
+<dialog id="dlgTakeover" class="dlg" aria-labelledby="toTitle">
+  <header class="dlg-head"><h2 id="toTitle"><svg class="mini warn"><use href="#i-warn"/></svg>確定要接管控制？</h2></header>
+  <p id="toText">接管後，這個分頁的手把與鍵盤會立刻控制無人機。原本的機長分頁會變成只能觀看。</p>
+  <p class="note">接管前請確認你手上的搖桿都已置中。</p>
+  <div class="dlg-actions">
+    <button class="btn" data-close>取消</button>
+    <button class="btn btn-warn" id="btnTakeoverOk">確定接管</button>
+  </div>
+</dialog>
+
+<!-- 起飛失敗原因 -->
+<dialog id="dlgHint" class="dlg" aria-labelledby="hintTitle">
+  <header class="dlg-head"><h2 id="hintTitle"><svg class="mini danger"><use href="#i-danger"/></svg>起飛失敗</h2><button class="dlg-x" data-close aria-label="關閉">✕</button></header>
+  <p class="hint-primary" id="hintPrimary"></p>
+  <p class="note">Tello 只回了「<code id="hintRaw"></code>」，沒有說明原因。其他可能：</p>
+  <ul class="hint-others" id="hintOthers"></ul>
+  <div class="dlg-actions"><button class="btn btn-primary" data-close>知道了</button></div>
+</dialog>
+
+<script type="module" src="/static/js/main.js"></script>
+</body>
+</html>

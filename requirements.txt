@@ -1,0 +1,15 @@
+# 執行期依賴（原生模式 Python 3.10–3.14、Docker 映像 Python 3.12 共用）
+# 每一個版本都已確認在 cp310 / cp312 / cp314（Windows、macOS arm64、Linux x86_64/aarch64）有 wheel
+fastapi==0.116.1
+starlette==0.47.3
+pydantic==2.12.3
+pydantic-core==2.41.4
+uvicorn==0.35.0
+websockets==15.0.1
+anyio==4.16.0
+h11==0.16.0
+click==8.5.1
+idna==3.20
+annotated-types==0.8.0
+typing-extensions==4.16.0
+typing-inspection==0.4.5

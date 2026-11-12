@@ -1,0 +1,11 @@
+.git
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+tests
+tello_pad.py
+*.md
+start-*
+compose*.yml

@@ -1,0 +1,19 @@
+# 一般使用：docker compose up -d  →  瀏覽器開 http://localhost:8080
+# 模擬器：  docker compose -f compose.yml -f compose.sim.yml up
+name: tello-gcs
+
+services:
+  gcs:
+    build: .
+    image: tello-gcs:latest
+    init: true                   # tini 當 PID 1，把 SIGTERM 轉給 python
+    stop_signal: SIGTERM
+    stop_grace_period: 15s       # docker stop 最多等 15 秒（land 在收到訊號當下就會送出）
+    restart: "no"                # 不要開機自動啟動：會占住 UDP 8890/11111，害原生模式無法使用
+    environment:
+      TELLO_IP: ${TELLO_IP:-192.168.10.1}
+      PUBLIC_PORT: "8080"
+    ports:
+      - "127.0.0.1:8080:8080"    # HTTP 只綁本機
+      - "8890:8890/udp"          # Tello 狀態封包（Tello 主動送進來，必須綁在所有介面）
+      - "11111:11111/udp"        # Tello 影像

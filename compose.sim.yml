@@ -1,0 +1,19 @@
+# 模擬器 override（明確啟用，不會自動切換）：
+#   docker compose -f compose.yml -f compose.sim.yml up
+# 結束後請 down（同一組檔案），避免模擬器容器留著：
+#   docker compose -f compose.yml -f compose.sim.yml down
+services:
+  gcs:
+    environment:
+      TELLO_IP: mock-tello
+      TELLO_SIM: "1"
+    depends_on:
+      - mock-tello
+
+  mock-tello:
+    image: tello-gcs:latest
+    init: true
+    stop_grace_period: 5s
+    command: ["python", "-m", "sim.mock_tello"]
+    environment:
+      PYTHONUNBUFFERED: "1"

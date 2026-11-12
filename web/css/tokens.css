@@ -1,0 +1,48 @@
+/* 設計 token：色彩語意全站一致（綠＝正常、琥珀＝警告、紅＝危急），並一律搭配圖示＋文字。
+   對比度由 tests/unit/test_contrast.py 驗證（WCAG AA ≥ 4.5:1）。 */
+:root {
+  color-scheme: dark;
+
+  --bg: #0B0F14;
+  --surface: #111821;
+  --surface-2: #17202B;
+  --surface-3: #1E2935;
+  --border: #2A3644;
+  --border-strong: #3A4A5C;
+
+  --text: #E6EDF3;
+  --text-2: #A9B6C3;
+  --text-3: #8C9AA8;
+
+  --accent: #5CB3FF;
+  --ok: #3DD68C;
+  --warn: #F5B941;
+  --danger: #FF6B6B;
+
+  --ok-bg: #0F2A1E;
+  --warn-bg: #2E2410;
+  --danger-bg: #3A1418;
+  --danger-fill: #D92D3A;
+  --on-fill: #FFFFFF;
+  --on-warn: #1A1300;
+
+  --hud-plate: rgba(11, 15, 20, 0.72);
+
+  --font: "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 15px;
+  --fs-lg: 18px;
+  --fs-key: 30px;      /* 關鍵數值至少 28px */
+  --fs-hud: 34px;
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+
+  --side: clamp(244px, 16vw, 320px);
+  --top-h: 76px;
+  --bottom-h: 148px;
+}

@@ -1,0 +1,40 @@
+﻿<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Tello 地面站 · 診斷</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/diag.css">
+</head>
+<body>
+<header class="dg-top">
+  <h1>診斷</h1>
+  <span class="dg-sub" id="dgEnv">—</span>
+  <span class="dg-spacer"></span>
+  <a href="/" class="dg-link">回控制頁</a>
+</header>
+<main class="dg">
+  <section class="dg-advice" id="advice" aria-live="polite">
+    <h2>排除建議</h2>
+    <ol id="adviceList"></ol>
+  </section>
+  <div class="dg-grid">
+    <section class="card" id="cardCmd"><h2><i class="dot"></i>指令回應（UDP 8889）</h2><dl id="dlCmd"></dl></section>
+    <section class="card" id="cardState"><h2><i class="dot"></i>狀態封包（UDP 8890）</h2><dl id="dlState"></dl></section>
+    <section class="card" id="cardVideo"><h2><i class="dot"></i>影像封包（UDP 11111）</h2><dl id="dlVideo"></dl></section>
+    <section class="card" id="cardWs"><h2><i class="dot"></i>WebSocket</h2><dl id="dlWs"></dl></section>
+    <section class="card" id="cardBrowser"><h2><i class="dot"></i>瀏覽器能力</h2><dl id="dlBrowser"></dl></section>
+    <section class="card" id="cardChecks"><h2><i class="dot"></i>啟動檢查</h2><ul class="checks" id="ulChecks"></ul></section>
+    <section class="card card-wide" id="cardPad"><h2><i class="dot"></i>手把（原始數值）</h2>
+      <dl id="dlPad"></dl>
+      <div class="axes" id="axes"></div>
+      <div class="buttons" id="buttons"></div>
+    </section>
+  </div>
+</main>
+<script type="module" src="/static/js/diag.js"></script>
+</body>
+</html>
