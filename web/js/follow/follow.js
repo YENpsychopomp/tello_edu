@@ -2,9 +2,11 @@
 //
 // 手把／鍵盤介入：只要搖桿離開死區，rc 完全交給手動；放開 1 秒後自動恢復跟隨，
 // 並把「當下的高度與距離」當成新的設定值（介入就是調整構圖的方法）。
-import { applyGesture, clampSetpoint, followRc, slew } from './control.js';
+import { applyGesture, armWindow, clampSetpoint, followRc, slew } from './control.js';
 import { GESTURES, GestureLatch, classifyPose } from './gestures.js';
-import { inBox } from './geometry.js';
+import { LM, inBox } from './geometry.js';
+import { HandDetector } from './hand.js';
+import { PALM, PalmLander, armForward, detectPalm, handInfo, matchHand } from './palm.js';
 import { PoseDetector } from './pose.js';
 import { Tracker } from './tracker.js';
 
@@ -24,7 +26,11 @@ export const PHASE = {
   manual: ['warn', '手動介入中'],
   resume: ['warn', '即將恢復跟隨…'],
   lost: ['danger', '目標遺失 → 懸停中'],
+  'palm-approach': ['warn', '停到手上：飛向手掌…'],
+  'palm-hold': ['warn', '停到手上：把手掌移到機身正下方'],
+  'palm-land': ['ok', '停到手上：降落中'],
 };
+const PALM_PHASE = { approach: 'palm-approach', hold: 'palm-hold', landing: 'palm-land' };
 
 const SKELETON = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]];
 
@@ -43,6 +49,13 @@ export class FollowMode {
     Object.assign(this, o);
     this.ctx = o.overlay.getContext('2d');
     this.detector = new PoseDetector();
+    this.hands = new HandDetector();
+    this.palm = new PalmLander();
+    this.palmSide = null;        // 'l' | 'r'：哪一隻手要停
+    this.palmHand = null;        // {x, y, dist, open, seen}
+    this.palmSavedSp = null;     // 開始前的設定值（取消時恢復，無人機會退回原本的距離）
+    this.fakeHands = null;       // E2E：() => 手部偵測結果
+    this.handError = '';
     this.tracker = new Tracker();
     this.latch = new GestureLatch();
     this.enabled = false;
@@ -94,12 +107,24 @@ export class FollowMode {
       this.overlay.hidden = true;
     }
     this._set();
+    if (!this.enabled) return;
+    // 手部模型只用在「停到手上」；載入失敗不影響跟隨
+    try {
+      await this.hands.load();
+    } catch (e) {
+      this.handError = e && e.message ? e.message : String(e);
+      this.notify('warn', '停到手上無法使用', `手部模型載入失敗：${this.handError}`);
+    }
   }
+
+  get handsReady() { return !!this.fakeHands || this.hands.ready; }
 
   disable(reason) {
     if (!this.enabled) return;
     this.enabled = false;
     this.paused = false;
+    this.palm.reset();
+    this.palmHand = null;
     this.tracker.reset();
     this.people = [];
     this.rc = [0, 0, 0, 0];
@@ -181,23 +206,81 @@ export class FollowMode {
       this._selected(this.people[0].id);
     }
 
-    // 手勢：只看目標本人，而且只有在跟隨／暫停中才接受（手動介入時不理）
-    if (tgt && tgt.seen === now && (this.phase === 'follow' || this.phase === 'paused')) {
-      const g = this.latch.feed(classifyPose(tgt.lms, this.canvas.width / this.canvas.height || 4 / 3), now);
-      if (g) this._gesture(g, now);
+    const aspect = this.canvas.width / this.canvas.height || 4 / 3;
+    const fresh = tgt && tgt.seen === now;
+    const palmOn = this.palm.active;
+
+    // 手部模型：停到手上進行中（要追蹤手的位置），或目標有一隻手臂向前伸（可能要做「停到手上」）才跑
+    let hands = null;
+    if (fresh && this.handsReady && (palmOn || armForward(tgt.lms, 'l', aspect) || armForward(tgt.lms, 'r', aspect))) {
+      try { hands = this.fakeHands ? this.fakeHands(now) : this.hands.detect(this.canvas); } catch (e) { hands = null; }
+    }
+    if (palmOn && fresh && hands) {
+      const wrist = tgt.lms[this.palmSide === 'l' ? LM.L_WRIST : LM.R_WRIST];
+      // 手伸近鏡頭時姿勢模型的手腕會偏，配對範圍放寬；配不到就取最大（最近）的那隻手
+      const h = matchHand(wrist, hands, aspect, 0.25) || (hands.length === 1 ? hands[0] : null);
+      if (h) this.palmHand = { ...handInfo(h, aspect), seen: now };
+    }
+
+    // 手勢：只看目標本人，而且只有在跟隨／暫停中才接受（手動介入時不理）。停到手上進行中只接受 T 字（取消）
+    if (fresh && (this.phase === 'follow' || this.phase === 'paused' || palmOn)) {
+      let g = classifyPose(tgt.lms, aspect);
+      let cand = null;
+      if (!g && hands && !palmOn) {
+        cand = detectPalm(tgt.lms, hands, aspect);
+        if (cand) g = 'palm';
+      }
+      if (palmOn && g !== 'pause') g = null;
+      const fired = this.latch.feed(g, now);
+      if (fired === 'palm' && cand) this._startPalm(cand, aspect, now);
+      else if (fired) this._gesture(fired, now);
     } else this.latch.reset();
     this._set();
   }
 
+  _startPalm(cand, aspect, now) {
+    if (!this.handsReady) return;
+    this.palmSide = cand.side;
+    this.palmHand = { ...handInfo(cand.hand, aspect), seen: now };
+    this.palmSavedSp = { ...this.sp };
+    this.paused = false;
+    this.palm.start(now);
+    this.lastGesture = { g: 'palm', at: now };
+    this.notify('warn', '手勢：停到手上', '飛向你的手；靠近後請把手掌移到機身正下方。推搖桿或做 T 字可以取消');
+    this.buzz('tap');
+  }
+
+  _endPalm(level, title, text) {
+    this.palm.reset();
+    this.palmHand = null;
+    if (this.palmSavedSp) { this.sp = this.palmSavedSp; this.palmSavedSp = null; }
+    this.notify(level, title, text);
+    this.buzz(level === 'ok' ? 'land' : 'warn');
+  }
+
   _gesture(g, now) {
     this.lastGesture = { g, at: now };
+    if (g === 'pause' && this.palm.active) {
+      this._endPalm('warn', '已取消停到手上', '手勢 T 字：恢復跟隨，退回原本的距離');
+      return;
+    }
     if (g === 'pause') {
       this.paused = !this.paused;
       this.notify(this.paused ? 'warn' : 'ok', this.paused ? '手勢：暫停跟隨' : '手勢：恢復跟隨', this.paused ? '原地懸停，再做一次 T 字恢復' : '');
     } else {
-      this.sp = applyGesture(this.sp, g);
+      let sp = applyGesture(this.sp, g);
+      let note = '';
+      if (g === 'up' || g === 'down') {
+        // 高度設定不能超出「手臂看得見」的範圍，否則之後的手勢就看不到了
+        const tel = this.getTel() || {};
+        const win = armWindow(this.tracker.target, Number.isFinite(tel.h) ? tel.h : null);
+        if (win && win.fits && sp.height > win.hi) { sp = { ...sp, height: Math.max(this.sp.height, Math.floor(win.hi)) }; note = '（已到上限：再高會看不到髖部與胸前手勢）'; }
+        else if (win && win.fits && sp.height < win.lo) { sp = { ...sp, height: Math.min(this.sp.height, Math.ceil(win.lo)) }; note = '（已到下限：再低舉起的手會出畫面）'; }
+        else if (win && !win.fits) note = '（距離太近，舉過頭的手可能會被切掉）';
+      }
+      this.sp = clampSetpoint(sp);
       this.notify('ok', `手勢：${GESTURES[g].label}`,
-        g === 'up' || g === 'down' ? `設定高度 ${this.sp.height} cm` : `設定距離 ${this.sp.dist.toFixed(1)} m`);
+        (g === 'up' || g === 'down' ? `設定高度 ${this.sp.height} cm` : `設定距離 ${this.sp.dist.toFixed(1)} m`) + note);
     }
     this.buzz('tap');
   }
@@ -211,13 +294,19 @@ export class FollowMode {
   mix(manualRc, manualActive, now = performance.now()) {
     const tel = this.getTel() || {};
     const flying = !!tel.flying;
+    if (this.palm.phase === 'landing' && !flying) {
+      this._endPalm('ok', '已停在手上', '螺旋槳已停止');
+      this.palmSavedSp = null;
+    }
     if (!this.enabled || !this.isPilot() || !flying) {
+      if (this.palm.active && this.palm.phase !== 'landing') this.palm.reset();
       this.rc = [0, 0, 0, 0];
       this.wasManual = false;
       this._set(flying);
       return manualRc;
     }
     if (manualActive) {
+      if (this.palm.active && this.palm.phase !== 'landing') this._endPalm('warn', '已取消停到手上', '手動介入');
       this.manualAt = now;
       this.wasManual = true;
       this.rc = [0, 0, 0, 0];
@@ -228,6 +317,25 @@ export class FollowMode {
 
     const tgt = this.tracker.target;
     const fresh = tgt && now - tgt.seen <= STALE_MS;
+
+    // 停到手上：由 PalmLander 接手控制
+    if (this.palm.active) {
+      const hand = this.palmHand && now - this.palmHand.seen <= STALE_MS ? this.palmHand : null;
+      const r = this.palm.update({
+        now, hand, flying,
+        distMin: fresh && Number.isFinite(tgt.distMin) ? tgt.distMin : null,
+        tof: Number.isFinite(tel.tof) ? tel.tof : null,
+      });
+      if (r.land) {
+        this.notify('ok', '偵測到手掌在正下方', '降落到手上');
+        if (this.command) this.command('land');
+      }
+      if (this.palm.phase === 'abort') this._endPalm('warn', '已取消停到手上', this.palm.reason);
+      this.why = [`palm-${this.palm.phase}`];
+      this.rc = slew(this.rc, r.rc);
+      this._set(flying);
+      return this.rc;
+    }
     if (this.wasManual || !this.spInit) {
       // 介入結束（或剛選定目標）：當下的構圖就是新的設定值
       if (fresh) {
@@ -244,9 +352,11 @@ export class FollowMode {
     let next = [0, 0, 0, 0];
     this.why = [];
     if (fresh && !this.paused && this.spInit && this.hasVideoOrFake()) {
-      const r = followRc({ cx: tgt.cx, dist: tgt.dist, distMin: tgt.distMin }, this.sp, Number.isFinite(tel.h) ? tel.h : null);
+      const r = followRc({ cx: tgt.cx, dist: tgt.dist, distMin: tgt.distMin, lms: tgt.lms, torso: tgt.torso, shoulder: tgt.shoulder },
+        this.sp, Number.isFinite(tel.h) ? tel.h : null);
       next = r.raw;
       this.why = r.why;
+      this.hTarget = r.hTarget;
     }
     this.rc = slew(this.rc, next);
     this._set(flying);
@@ -264,6 +374,7 @@ export class FollowMode {
     if (!this.enabled) p = this.error ? 'error' : 'off';
     else if (!this.fake && !this.detector.ready) p = 'loading';
     else if (!this.hasVideoOrFake()) p = 'no-video';
+    else if (this.palm.active && (f || this.palm.phase === 'landing')) p = PALM_PHASE[this.palm.phase];
     else if (!tgt) p = 'select';
     else if (!f) p = 'ready';
     else if (now - this.manualAt < 120) p = 'manual';
@@ -286,7 +397,8 @@ export class FollowMode {
       target: tgt ? tgt.id : null, dist: tgt && Number.isFinite(tgt.dist) ? tgt.dist : null,
       sp: this.sp, spInit: this.spInit, people: this.people.map((t) => t.id), fps: this.fps,
       ms: this.detector.ms, delegate: this.detector.delegate, rc: this.rc, why: this.why,
-      paused: this.paused, gesture: this.lastGesture,
+      paused: this.paused, gesture: this.lastGesture, hTarget: this.hTarget ?? null,
+      palm: { phase: this.palm.phase, side: this.palmSide, hand: this.palmHand, ready: this.handsReady, error: this.handError },
     };
   }
 
@@ -335,6 +447,31 @@ export class FollowMode {
       g.fillRect(lx, ly - th, tw, th);
       g.fillStyle = isT ? '#0B0F14' : '#E6EDF3';
       g.fillText(label, lx + 7, ly - th * 0.12);
+    }
+
+    // 停到手上：手掌要對準的位置（虛線框）＋偵測到的手
+    if (this.palm.active) {
+      const zx = W / 2, zy = H * PALM.handY, zr = H * PALM.tol;
+      g.strokeStyle = col.warn; g.lineWidth = lw * 1.5; g.setLineDash([lw * 3, lw * 2]);
+      g.strokeRect(zx - zr * 1.2, zy - zr, zr * 2.4, zr * 2);
+      g.setLineDash([]);
+      const h = this.palmHand;
+      if (h && now - h.seen <= STALE_MS) {
+        g.fillStyle = h.open ? col.ok : col.warn;
+        g.beginPath(); g.arc(h.x * W, h.y * H, lw * 4, 0, Math.PI * 2); g.fill();
+        if (Number.isFinite(h.dist)) {
+          g.fillStyle = '#E6EDF3';
+          g.fillText(`手 約 ${Math.round(h.dist * 100)} cm`, h.x * W + lw * 6, h.y * H - lw * 2);
+        }
+      }
+      if (this.palm.phase === 'hold') {
+        const txt = '把手掌移到無人機正下方';
+        const tw = g.measureText(txt).width + 28, th = Math.round(H / 14);
+        g.fillStyle = 'rgba(11,15,20,.85)'; g.fillRect((W - tw) / 2, H * 0.16, tw, th);
+        g.fillStyle = col.warn; g.textBaseline = 'middle';
+        g.fillText(txt, (W - tw) / 2 + 14, H * 0.16 + th / 2);
+        g.textBaseline = 'bottom';
+      }
     }
 
     // 中央十字（跟隨的瞄準點）

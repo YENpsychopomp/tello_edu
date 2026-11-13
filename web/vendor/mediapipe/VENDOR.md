@@ -1,11 +1,12 @@
 # 第三方檔案：MediaPipe Tasks Vision
 
-跟隨模式用的人體姿勢偵測。全部放在本機，執行時不連網路。
+跟隨模式用的人體姿勢偵測，以及「停到手上」用的手部偵測。全部放在本機，執行時不連網路。
 
 | 檔案 | 來源 | 授權 |
 |---|---|---|
 | `vision_bundle.mjs`、`wasm/vision_wasm_internal.{js,wasm}` | npm `@mediapipe/tasks-vision@1.1.1`（只保留 SIMD 版 wasm；Chrome／Edge 都支援） | Apache-2.0 |
 | `models/pose_landmarker_lite.task` | `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task` | Apache-2.0 |
+| `models/hand_landmarker.task`（7,819,105 bytes，2026-11-13 下載） | `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task` | Apache-2.0 |
 
 `vision_bundle.mjs` 只刪掉最後一行 `sourceMappingURL`（沒有附 .map，避免 404），其餘未修改。
 

@@ -6,6 +6,7 @@
 //   雙手高舉過頭（Y） → farther  拉遠
 //   雙手在胸前交叉    → closer   靠近
 //   雙手側平舉（T）   → pause    暫停／恢復跟隨（暫停時原地懸停，仍持續追蹤）
+//   手臂向前伸＋手掌張開 → palm 停到手上（需要手部模型判斷手掌張開，見 palm.js）
 import { LM, visible } from './geometry.js';
 
 export const GESTURES = {
@@ -14,6 +15,7 @@ export const GESTURES = {
   farther: { label: '拉遠', how: '雙手高舉過頭' },
   closer: { label: '靠近', how: '雙手在胸前交叉' },
   pause: { label: '暫停／恢復', how: '雙手側平舉（T 字）' },
+  palm: { label: '停到手上', how: '手臂向前伸、手掌張開' },
 };
 
 /** 單一幀的姿勢分類；看不清楚就回傳 null */
@@ -60,7 +62,7 @@ export function classifyPose(lms, aspect = 4 / 3) {
 
 /**
  * 手勢要「維持一段時間」才算數，避免揮手、轉身時誤觸發。
- * 升高／降低／拉遠／靠近維持不放會每 repeatMs 重複一次；暫停必須放下手再做一次才會再切換。
+ * 升高／降低／拉遠／靠近維持不放會每 repeatMs 重複一次；暫停、停到手上必須放下手再做一次才會再觸發。
  */
 export class GestureLatch {
   constructor({ holdMs = 600, repeatMs = 1100, minFrames = 4 } = {}) {
@@ -82,7 +84,7 @@ export class GestureLatch {
     this.frames++;
     if (now - this.since < this.holdMs || this.frames < this.minFrames) return null;
     if (!this.fired) { this.fired = now; return g; }
-    if (g !== 'pause' && now - this.fired >= this.repeatMs) { this.fired = now; return g; }
+    if (g !== 'pause' && g !== 'palm' && now - this.fired >= this.repeatMs) { this.fired = now; return g; }
     return null;
   }
 

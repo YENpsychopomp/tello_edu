@@ -180,6 +180,7 @@ const follow = new FollowMode({
   frameCount: () => player.frames,
   notify: (level, title, text) => { toast(level, title, text || ''); if (level !== 'info') addLog(level, `跟隨：${title}${text ? `（${text}）` : ''}`); },
   buzz: (p) => buzz(p),
+  command: (c) => runCmd(c),
   onChange: () => renderFollow(),
 });
 
@@ -213,7 +214,8 @@ function renderFollow() {
     }
   }
   $('flwDist').textContent = f.dist === null ? '--' : `約 ${f.dist.toFixed(1)} m`;
-  $('flwSp').textContent = f.spInit ? `${f.sp.dist.toFixed(1)} m／${f.sp.height} cm` : '起飛後鎖定';
+  const framed = Number.isFinite(f.hTarget) && Math.abs(f.hTarget - f.sp.height) > 5 ? ` → ${Math.round(f.hTarget)} cm（保持手臂在畫面內）` : '';
+  $('flwSp').textContent = f.spInit ? `${f.sp.dist.toFixed(1)} m／${f.sp.height} cm${framed}` : '起飛後鎖定';
   $('flwFps').textContent = f.delegate || follow.fake ? `${f.fps} fps · ${f.delegate || '模擬'}` : '--';
 }
 

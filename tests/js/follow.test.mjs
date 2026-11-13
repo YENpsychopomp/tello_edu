@@ -139,8 +139,9 @@ test('控制器：目標在右邊 → 向右轉；太遠 → 前進；太近 →
 
 test('控制器安全：太近一律後退；看不到髖部不前進；輸出不超過上限', () => {
   const sp = { dist: 3, height: 150 };
-  assert.ok(followRc({ cx: 0.5, dist: null, distMin: 0.8 }, sp, 150).raw[1] < 0);
-  assert.ok(followRc({ cx: 0.5, dist: 4, distMin: 1.0 }, sp, 150).raw[1] < 0);  // 肩寬說太近就是太近
+  assert.ok(followRc({ cx: 0.5, dist: null, distMin: 0.3 }, sp, 150).raw[1] < 0);
+  assert.ok(followRc({ cx: 0.5, dist: 4, distMin: 0.35 }, sp, 150).raw[1] < 0);  // 肩寬說太近就是太近
+  // 0.8 m 已經不算太近（可設定到 0.5 m）
   const r = followRc({ cx: 0.5, dist: null, distMin: 5 }, sp, 150);
   assert.equal(r.raw[1], 0);
   assert.ok(r.why.includes('no-torso'));

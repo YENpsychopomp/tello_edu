@@ -58,6 +58,7 @@ class World:
     flight_time: float = 0.0
     target_h: Optional[float] = None
     rc: tuple = (0, 0, 0, 0)
+    below: float = 0.0            # 機身正下方有東西（例如手掌）比地面高出幾 cm → ToF 變短
 
 
 class MockTello(asyncio.DatagramProtocol):
@@ -226,7 +227,7 @@ class MockTello(asyncio.DatagramProtocol):
         return ("mid:-1;x:-100;y:-100;z:-100;mpry:0,0,0;"
                 f"pitch:{int(round(w.pitch))};roll:{int(round(w.roll))};yaw:{int(round(w.yaw))};"
                 f"vgx:{int(round(w.vgx))};vgy:{int(round(w.vgy))};vgz:{int(round(w.vgz))};"
-                f"templ:{int(w.temph) - 2};temph:{int(w.temph)};tof:{int(w.h) + 10};h:{int(w.h)};"
+                f"templ:{int(w.temph) - 2};temph:{int(w.temph)};tof:{max(10, int(w.h) + 10 - int(w.below))};h:{int(w.h)};"
                 f"bat:{int(math.ceil(w.bat))};baro:{100.0 + w.h / 100:.2f};time:{int(w.flight_time)};"
                 "agx:-3.00;agy:1.00;agz:-999.00;\r\n")
 

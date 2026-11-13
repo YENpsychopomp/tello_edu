@@ -11,8 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.test_ui import A, B, OPEN, URL, open_page, press, wait_cmd  # noqa: F401  (fixtures 也要匯入)
-from tests.e2e.test_ui import browser, stack, _close_contexts  # noqa: F401
+# 用同目錄的模組名稱匯入（不用 tests.e2e.…：有些電腦的 PYTHONPATH 裡有別的專案也叫 tests）
+from test_ui import A, B, OPEN, URL, open_page, press, wait_cmd  # noqa: F401  (fixtures 也要匯入)
+from test_ui import browser, stack, _close_contexts  # noqa: F401
 
 pytestmark = pytest.mark.e2e
 ROOT = Path(__file__).resolve().parents[2]
@@ -189,6 +190,135 @@ def test_follow_target_lost_for_good_needs_manual_pick(browser, stack):
     assert page.locator("#followOverlay").is_hidden()
     assert errors == []
     page.context.close()
+
+
+# 有幾何關係的世界：人站在 dist 公尺外（肩 1.45 m、髖 0.95 m），無人機往前飛 dist 會變小；
+# 人在畫面中的位置由無人機高度（模擬器回報的 h）決定。伸出的手在身體前方 0.55 m。
+GEO_WORLD = """
+async () => {
+  const { person, hand } = await import('/static/__test/synthetic.mjs');
+  const { describePerson } = await import('/static/js/follow/geometry.js');
+  const W = window.__pw = { dist: 2.2, arms: {}, open: true, last: performance.now(), lms: null };
+  const view = () => {
+    const now = performance.now(), dt = Math.min(0.2, (now - W.last) / 1000); W.last = now;
+    const rc = window.__gcs.S.rc || [0, 0, 0, 0];
+    W.dist = Math.max(0.3, W.dist - (rc[1] / 100) * dt);
+    const h = (window.__gcs.S.tel && window.__gcs.S.tel.h) || 0;
+    const k = 1 / (W.dist * 1.055);
+    return { t: 0.5 * k, cy: 0.5 + (h / 100 - 1.2) * k, h };
+  };
+  window.__gcs.follow.fake = () => {
+    const v = view();
+    W.lms = person({ cx: 0.5, cy: v.cy, t: v.t, arms: W.arms });
+    const d = describePerson(W.lms, 4 / 3);
+    return d ? [d] : [];
+  };
+  window.__gcs.follow.fakeHands = () => {
+    if (!W.lms || W.arms.r !== 'forward') return [];
+    const w = W.lms[16];
+    return [hand({ x: w.x, y: w.y, dist: Math.max(0.15, W.dist - 0.55), open: W.open })];
+  };
+}
+"""
+
+
+def geo_page(browser):
+    page, errors = open_page(browser)
+    page.route("**/static/__test/synthetic.mjs",
+               lambda r: r.fulfill(status=200, content_type="text/javascript", body=SYN))
+    page.evaluate(GEO_WORLD)
+    press(page, MENU)
+    wait_phase(page, "ready")
+    press(page, A)
+    page.wait_for_function("window.__gcs.S.tel.flying === true", timeout=6000)
+    wait_phase(page, "follow")
+    return page, errors
+
+
+def frame_edges(page):
+    """目前畫面中：舉手時手腕的位置（上緣）、髖部（下緣）"""
+    return page.evaluate("""() => {
+      const L = window.__pw.lms, sh = (L[11].y + L[12].y) / 2, hip = (L[23].y + L[24].y) / 2;
+      return { top: sh - 1.45 * (hip - sh), hip };
+    }""")
+
+
+def test_follow_height_keeps_arms_in_frame(browser, stack):
+    page, errors = geo_page(browser)
+    # 想升到 300 cm：只會升到髖部還在畫面內的高度
+    page.evaluate("window.__gcs.follow.sp = { dist: window.__gcs.follow.sp.dist, height: 300 }")
+    page.wait_for_function("window.__gcs.follow.why.includes('frame-high')", timeout=3000)
+    page.wait_for_timeout(5000)
+    e = frame_edges(page)
+    assert e["hip"] <= 0.97, e
+    assert stack.mock.w.h < 280
+    # 想降到 60 cm：只會降到舉起的手還在畫面內的高度
+    page.evaluate("window.__gcs.follow.sp = { dist: window.__gcs.follow.sp.dist, height: 60 }")
+    page.wait_for_function("window.__gcs.follow.why.includes('frame-low')", timeout=3000)
+    page.wait_for_timeout(6000)
+    e = frame_edges(page)
+    assert e["top"] >= 0.03, e
+    assert stack.mock.w.h > 80
+    assert errors == []
+
+
+def test_palm_landing(browser, stack):
+    page, errors = geo_page(browser)
+    # 手臂向前伸、手掌張開 → 停到手上
+    page.evaluate("window.__pw.arms = { r: 'forward' }")
+    wait_phase(page, "palm-approach", 4000)
+    assert "停到手上" in page.locator("#toasts").inner_text()
+    wait_phase(page, "palm-hold", 20000)
+    hand_d = page.evaluate("window.__pw.dist - 0.55")
+    assert 0.35 <= hand_d <= 0.65, hand_d
+    assert stack.mock.w.h > 125, f"懸停高度 {stack.mock.w.h} 應該比手（125 cm）高"
+    assert "land" not in stack.mock.commands()
+    SHOTS.mkdir(exist_ok=True)
+    page.screenshot(path=str(SHOTS / "palm-hold-1280x720.png"))
+    # 手掌移到機身正下方 → ToF 變短 → 送 land → 落在手上、螺旋槳停止
+    page.wait_for_timeout(1000)
+    h = stack.mock.w.h
+    stack.call(lambda: setattr(stack.mock.w, "below", h - 15))
+    wait_cmd(stack, "land", timeout=3)
+    page.wait_for_function("window.__gcs.S.tel.flying === false", timeout=10000)
+    page.wait_for_function("document.querySelector('#toasts').textContent.includes('已停在手上')", timeout=3000)
+    until(lambda: not stack.mock.w.motors, 6.0, "模擬器的馬達應該停止")
+    assert errors == []
+
+
+def test_palm_landing_cancel_by_stick(browser, stack):
+    page, errors = geo_page(browser)
+    page.evaluate("window.__pw.arms = { r: 'forward' }")
+    wait_phase(page, "palm-approach", 4000)
+    page.evaluate("window.__pw.arms = {}")
+    page.evaluate("window.__axes([0, 0, 0, 0.6])")              # 拉右搖桿（後退）
+    page.wait_for_function("document.querySelector('#toasts').textContent.includes('已取消停到手上')", timeout=3000)
+    page.evaluate("window.__axes([0, 0, 0, 0])")
+    wait_phase(page, "follow", 4000)
+    assert page.evaluate("window.__gcs.follow.palm.phase") == "idle"
+    assert "land" not in stack.mock.commands()
+    # 握拳向前伸不會觸發
+    page.evaluate("window.__pw.open = false; window.__pw.arms = { r: 'forward' }")
+    page.wait_for_timeout(2000)
+    assert page.evaluate("window.__gcs.follow.phase") == "follow"
+    assert errors == []
+
+
+def test_real_hand_model_loads(browser, stack):
+    """手部模型（hand_landmarker.task）能在瀏覽器裡用專案內的檔案載入並執行。"""
+    page, errors = open_page(browser)
+    r = page.evaluate("""async () => {
+      const { HandDetector } = await import('/static/js/follow/hand.js');
+      const d = new HandDetector();
+      const delegate = await d.load();
+      const c = document.createElement('canvas'); c.width = 960; c.height = 720;
+      const g = c.getContext('2d'); g.fillStyle = '#556'; g.fillRect(0, 0, 960, 720);
+      const hands = d.detect(c);
+      return { delegate, n: hands.length, ms: d.ms };
+    }""")
+    assert r["delegate"] in ("GPU", "CPU")
+    assert r["n"] == 0                       # 空白畫面不會偵測到手
+    assert errors == []
 
 
 def _pose_jpg():
