@@ -1,6 +1,6 @@
 // 鍵盤備援控制：WASD 前後左右、方向鍵 升降／轉向；動作鍵交給 onAction。
 const FLIGHT = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
-const ACTIONS = { KeyT: 'takeoff', KeyL: 'land', KeyV: 'video', KeyP: 'photo', KeyR: 'record', KeyF: 'fullscreen' };
+const ACTIONS = { KeyT: 'takeoff', KeyL: 'land', KeyV: 'video', KeyP: 'photo', KeyR: 'record', KeyF: 'fullscreen', KeyG: 'follow', KeyN: 'followNext' };
 
 export class KeyboardInput {
   constructor(onAction, isEnabled) {

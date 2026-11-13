@@ -6,6 +6,7 @@ import contextlib
 import itertools
 import json
 import logging
+import mimetypes
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +25,10 @@ from .protocol import FLIP_MIN_BATTERY, IMMEDIATE_CMDS, classify, normalize_cmd,
 from .video import VideoHub
 
 log = logging.getLogger("gcs.server")
+# Windows 的 mimetypes 讀登錄檔，常常不認得 .wasm／.mjs；WebAssembly 串流編譯一定要 application/wasm
+mimetypes.add_type("application/wasm", ".wasm")
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("application/octet-stream", ".task")
 WEB = Path(__file__).resolve().parent.parent / "web"
 _ids = itertools.count(1)
 

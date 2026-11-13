@@ -1,5 +1,6 @@
 // 主程式：輸入（手把／鍵盤）→ rc 30 Hz；遙測 → 狀態列、HUD、飛前檢查、警示。
 import { SPEED, sticksToRc, shape } from './curve.js';
+import { FollowMode } from './follow/follow.js';
 import { BTN, GamepadInput, rumble } from './gamepad.js';
 import { updateHud } from './hud.js';
 import { KeyboardInput } from './keyboard.js';
@@ -55,7 +56,7 @@ const sock = new ControlSocket('/ws/control', {
       case 'role':
         S.role = m.role;
         if (m.role === 'pilot') { toast('ok', '你現在是機長', '手把與鍵盤已可控制無人機'); buzz('tap'); }
-        else toast('warn', '控制權已被接管', m.reason || '這個分頁變成觀看模式');
+        else { toast('warn', '控制權已被接管', m.reason || '這個分頁變成觀看模式'); follow.disable(); }
         break;
       default:
     }
@@ -133,6 +134,12 @@ function act(name, arg) {
     case 'record': toggleRecord(); return;
     case 'help': toggleDialog($('dlgHelp')); return;
     case 'fullscreen': toggleFullscreen(); return;
+    case 'follow':
+      if (!follow.enabled && !requirePilot()) return;
+      if (!follow.enabled && S.batLevel === 'danger') { toast('warn', '電量過低', '無法開啟跟隨模式'); buzz('warn'); return; }
+      follow.toggle();
+      return;
+    case 'followNext': follow.cycle(1); return;
     default:
   }
 }
@@ -163,6 +170,52 @@ const player = new VideoPlayer(canvas, $('mjpeg'), {
     addLog('ok', `影像開啟（${mode === 'webcodecs' ? 'WebCodecs' : 'MJPEG'}）`);
   },
 });
+
+// =============================================================== 跟隨模式
+const follow = new FollowMode({
+  canvas, overlay: $('followOverlay'),
+  getTel: () => (S.tel && S.tel.connected ? S.tel : null),
+  isPilot: () => isPilot(),
+  hasVideo: () => S.videoOn && player.hasFrame,
+  frameCount: () => player.frames,
+  notify: (level, title, text) => { toast(level, title, text || ''); if (level !== 'info') addLog(level, `跟隨：${title}${text ? `（${text}）` : ''}`); },
+  buzz: (p) => buzz(p),
+  onChange: () => renderFollow(),
+});
+
+function renderFollow() {
+  const f = follow.status();
+  const line = $('flwLine');
+  line.dataset.level = f.level;
+  line.querySelector('use').setAttribute('href', `#${ICON[f.level] || ICON.none}`);
+  $('flwText').textContent = f.text;
+  $('btnFollow').setAttribute('aria-pressed', String(f.enabled));
+  $('flwBtnText').textContent = f.enabled ? '關閉跟隨' : '開啟跟隨';
+  $('flwPeople').hidden = !f.enabled;
+  $('flwInfo').hidden = !f.enabled;
+  $('app').classList.toggle('follow-on', f.enabled);
+  if (!f.enabled) return;
+  const key = `${f.people.join(',')}|${f.target}`;
+  const box = $('flwPeople');
+  if (box.dataset.key !== key) {
+    box.dataset.key = key;
+    if (!f.people.length) box.replaceChildren(Object.assign(document.createElement('span'), { className: 'none', textContent: '畫面中沒有偵測到人' }));
+    else {
+      box.replaceChildren(...f.people.map((id) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = `#${id}`;
+        b.title = id === f.target ? '跟隨中' : `改跟 #${id}`;
+        b.setAttribute('aria-pressed', String(id === f.target));
+        b.addEventListener('click', () => { if (requirePilot()) follow.select(id); });
+        return b;
+      }));
+    }
+  }
+  $('flwDist').textContent = f.dist === null ? '--' : `約 ${f.dist.toFixed(1)} m`;
+  $('flwSp').textContent = f.spInit ? `${f.sp.dist.toFixed(1)} m／${f.sp.height} cm` : '起飛後鎖定';
+  $('flwFps').textContent = f.delegate || follow.fake ? `${f.fps} fps · ${f.delegate || '模擬'}` : '--';
+}
 
 function setVideoUi(on) {
   S.videoOn = on;
@@ -227,6 +280,7 @@ function inputTick() {
   S.rc = sticksToRc(sticks, SPEED[S.speed].k);
   S.pad = p;
   S.centered = !k.active && Object.values(p.sticks).every((v) => v === 0);
+  S.rc = follow.mix(S.rc, !S.centered);      // 跟隨模式：搖桿一動就交給手動
   if (isPilot()) sock.send({ t: 'rc', v: S.rc });
   drawSticks(sticks, p.connected || k.active);
 
@@ -249,6 +303,9 @@ function inputTick() {
     else if (i === BTN.B) act('land');
     else if (i === BTN.Y) act('video');
     else if (i === BTN.VIEW) act('help');
+    else if (i === BTN.MENU) act('follow');
+    else if (!xHeld && i === BTN.LEFT && follow.enabled) follow.cycle(-1);
+    else if (!xHeld && i === BTN.RIGHT && follow.enabled) follow.cycle(1);
     else if (xHeld && i === BTN.UP) act('flip', 'f');
     else if (xHeld && i === BTN.DOWN) act('flip', 'b');
     else if (xHeld && i === BTN.LEFT) act('flip', 'l');
@@ -319,7 +376,10 @@ function render() {
     : `${t.remaining_measured ? '剩餘' : '預估'} ${fmtTime(t.remaining_s)}`;
   if (bl !== S.batLevel) {
     if (bl === 'warn' && S.batLevel !== 'danger') { toast('warn', `電量 ${bat}%`, '請準備降落'); buzz('warn'); addLog('warn', `電量 ${bat}%`); }
-    if (bl === 'danger') { toast('danger', `電量 ${bat}%：立即降落`, ''); buzz('danger'); S.lastDangerBuzz = performance.now(); addLog('danger', `電量 ${bat}%`); }
+    if (bl === 'danger') {
+      toast('danger', `電量 ${bat}%：立即降落`, ''); buzz('danger'); S.lastDangerBuzz = performance.now(); addLog('danger', `電量 ${bat}%`);
+      if (follow.enabled) follow.disable('電量過低，已自動關閉跟隨模式');
+    }
     S.batLevel = bl;
   } else if (bl === 'danger' && t.flying && performance.now() - S.lastDangerBuzz > 20000) {
     buzz('danger'); S.lastDangerBuzz = performance.now();
@@ -381,6 +441,7 @@ function render() {
   $('linkVideo').textContent = t && t.video ? `${t.video.fps} fps · ${Math.round(t.video.kbps)} kbps` : '--';
 
   updateHud(connected ? t : null);
+  renderFollow();
   renderAlerts(t, connected, bl, bat, tl, temp);
   renderLinkAlarm(t, wsOpen);
   if (recorder.active) $('recTime').textContent = fmtTime(recorder.elapsed());
@@ -523,6 +584,7 @@ $('btnLand').addEventListener('click', () => act('land'));
 $('btnVideo').addEventListener('click', () => act('video'));
 $('btnPhoto').addEventListener('click', () => act('photo'));
 $('btnRec').addEventListener('click', () => act('record'));
+$('btnFollow').addEventListener('click', () => act('follow'));
 
 // 緊急停槳：滑鼠長按 1 秒，顯示進度環
 (() => {
@@ -580,5 +642,5 @@ if (!window.isSecureContext) {
 }
 
 // 給 E2E 測試讀取狀態（不影響功能）
-window.__gcs = { S, get settings() { return settings; }, sock, player };
+window.__gcs = { S, get settings() { return settings; }, sock, player, follow };
 render();
