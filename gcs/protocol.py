@@ -14,6 +14,8 @@ ASK_CMDS: dict[str, float] = {
     "takeoff": 12.0, "streamon": 5.0, "streamoff": 5.0,
     "flip l": 5.0, "flip r": 5.0, "flip f": 5.0, "flip b": 5.0,
     "battery?": 3.0, "sdk?": 3.0, "sn?": 3.0, "wifi?": 3.0,
+    # 切換影像來源：0 前鏡頭、1 下視鏡頭（SDK 3.0；舊韌體回 error／unknown command）
+    "downvision 0": 3.0, "downvision 1": 3.0,
 }
 # 不排隊、不等回應、立即送出（安全相關，不能被其他指令卡住）
 IMMEDIATE_CMDS = frozenset({"land", "emergency"})
@@ -113,7 +115,7 @@ def classify(resp: str) -> str:
         return "sent"
     if r in ("denied", "not allowed"):
         return "denied"
-    if r.startswith("error") or r == "network error" or r == "false":
+    if r.startswith("error") or r.startswith("unknown command") or r == "network error" or r == "false":
         return "error"
     return "ok"  # 查詢指令（battery? 等）回的是數值
 

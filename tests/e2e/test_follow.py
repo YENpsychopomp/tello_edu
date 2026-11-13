@@ -193,30 +193,53 @@ def test_follow_target_lost_for_good_needs_manual_pick(browser, stack):
 
 
 # 有幾何關係的世界：人站在 dist 公尺外（肩 1.45 m、髖 0.95 m），無人機往前飛 dist 會變小；
-# 人在畫面中的位置由無人機高度（模擬器回報的 h）決定。伸出的手在身體前方 0.55 m。
+# 人在畫面中的位置由無人機高度（模擬器回報的 h）決定。伸出的手在身體前方 0.55 m、高 1.25 m、
+# 比無人機起始位置偏右 side 公尺（下視鏡頭要做左右校準）。
+# 下視鏡頭（downvision 1）：視角約 ±31°，手掌中心在畫面上的位置由無人機和手的相對位置決定；
+# W.over＝手掌在機身正下方（測試程式據此設定模擬器的 below，讓 ToF 量到手）。
 GEO_WORLD = """
 async () => {
   const { person, hand } = await import('/static/__test/synthetic.mjs');
   const { describePerson } = await import('/static/js/follow/geometry.js');
-  const W = window.__pw = { dist: 2.2, arms: {}, open: true, last: performance.now(), lms: null };
-  const view = () => {
+  const { handCenter } = await import('/static/js/follow/palm.js');
+  const W = window.__pw = { dist: 2.2, y: 0, side: 0.07, handZ: 1.25, arms: {}, open: true, last: performance.now(),
+                            lms: null, over: false, fwd: null, rel: null };
+  const step = () => {
     const now = performance.now(), dt = Math.min(0.2, (now - W.last) / 1000); W.last = now;
     const rc = window.__gcs.S.rc || [0, 0, 0, 0];
     W.dist = Math.max(0.3, W.dist - (rc[1] / 100) * dt);
+    W.y += (rc[0] / 100) * dt;
     const h = (window.__gcs.S.tel && window.__gcs.S.tel.h) || 0;
-    const k = 1 / (W.dist * 1.055);
-    return { t: 0.5 * k, cy: 0.5 + (h / 100 - 1.2) * k, h };
+    const rel = { fwd: W.dist - 0.55, side: W.side - W.y, above: h / 100 - W.handZ };
+    W.rel = rel;
+    W.over = W.arms.r === 'forward' && Math.abs(rel.fwd) < 0.08 && Math.abs(rel.side) < 0.08;
+    return h;
   };
+  setInterval(step, 30);
   window.__gcs.follow.fake = () => {
-    const v = view();
-    W.lms = person({ cx: 0.5, cy: v.cy, t: v.t, arms: W.arms });
+    const h = step();
+    const k = 1 / (W.dist * 1.055);
+    W.lms = person({ cx: 0.5, cy: 0.5 + (h / 100 - 1.2) * k, t: 0.5 * k, arms: W.arms });
     const d = describePerson(W.lms, 4 / 3);
     return d ? [d] : [];
   };
-  window.__gcs.follow.fakeHands = () => {
-    if (!W.lms || W.arms.r !== 'forward') return [];
-    const w = W.lms[16];
-    return [hand({ x: w.x, y: w.y, dist: Math.max(0.15, W.dist - 0.55), open: W.open })];
+  window.__gcs.follow.fakeHands = (now, cam) => {
+    if (W.arms.r !== 'forward') return [];
+    if (cam !== 'down') {
+      if (!W.lms) return [];
+      const w = W.lms[16];
+      return [hand({ x: w.x, y: w.y, dist: Math.max(0.15, W.dist - 0.55), open: W.open })];
+    }
+    step();
+    const r = W.rel;
+    if (r.above < 0.05) return [];
+    const span = r.above * 0.6;
+    const ix = 0.5 + r.side / (2 * span * 4 / 3), iy = 0.5 - r.fwd / (2 * span);
+    if (ix < 0 || ix > 1 || iy < 0 || iy > 1) return [];
+    const hd = hand({ x: ix, y: iy, dist: r.above, open: W.open });
+    const c = handCenter(hd);                         // 讓手掌中心（不是手腕）落在 (ix, iy)
+    hd.lms = hd.lms.map((q) => ({ ...q, x: q.x + ix - c.x, y: q.y + iy - c.y }));
+    return [hd];
   };
 }
 """
@@ -262,27 +285,71 @@ def test_follow_height_keeps_arms_in_frame(browser, stack):
     assert errors == []
 
 
+def drive_palm(page, stack, until_cmd="land", timeout=45.0):
+    """手掌在機身正下方時，把模擬器的 below 設成手的高度（ToF 量到手）；直到送出 until_cmd。"""
+    t0 = time.time()
+    hand_cm = 135                              # 手 125 cm；模擬器的 ToF = h + 10 - below
+    below = None
+    while time.time() - t0 < timeout:
+        if until_cmd in stack.mock.commands():
+            return
+        over = page.evaluate("window.__pw.over")
+        want = hand_cm if over else 0
+        if want != below:
+            stack.call(lambda v=want: setattr(stack.mock.w, "below", v))
+            below = want
+        time.sleep(0.04)
+    raise AssertionError(f"沒有送出 {until_cmd}；目前 {st(page)['phase']} {page.evaluate('window.__pw.rel')}")
+
+
 def test_palm_landing(browser, stack):
     page, errors = geo_page(browser)
     # 手臂向前伸、手掌張開 → 停到手上
     page.evaluate("window.__pw.arms = { r: 'forward' }")
     wait_phase(page, "palm-approach", 4000)
     assert "停到手上" in page.locator("#toasts").inner_text()
-    wait_phase(page, "palm-hold", 20000)
-    hand_d = page.evaluate("window.__pw.dist - 0.55")
-    assert 0.35 <= hand_d <= 0.65, hand_d
-    assert stack.mock.w.h > 125, f"懸停高度 {stack.mock.w.h} 應該比手（125 cm）高"
+    # 飛近到手前方約 0.5–0.6 m → 切到下視鏡頭
+    page.wait_for_function("window.__gcs.follow.cam === 'down'", timeout=20000)
+    assert stack.mock.w.camera == 1 and "downvision 1" in stack.mock.commands()
+    rel = page.evaluate("window.__pw.rel")
+    assert 0.3 <= rel["fwd"] <= 0.7, rel
     assert "land" not in stack.mock.commands()
+    phases = set()
+    t0 = time.time()
+    # 爬升 → 往前 → 下視鏡頭看到手 → 細微校準
+    while time.time() - t0 < 30 and "palm-align" not in phases:
+        phases.add(page.evaluate("window.__gcs.follow.phase"))
+        time.sleep(0.03)
+    assert {"palm-climb", "palm-seek", "palm-align"} <= phases, phases
     SHOTS.mkdir(exist_ok=True)
-    page.screenshot(path=str(SHOTS / "palm-hold-1280x720.png"))
-    # 手掌移到機身正下方 → ToF 變短 → 送 land → 落在手上、螺旋槳停止
-    page.wait_for_timeout(1000)
-    h = stack.mock.w.h
-    stack.call(lambda: setattr(stack.mock.w, "below", h - 15))
-    wait_cmd(stack, "land", timeout=3)
+    page.screenshot(path=str(SHOTS / "palm-align-1280x720.png"))
+    # 對準在手上方 → 送 land → 落在手上、螺旋槳停止
+    drive_palm(page, stack)
+    rel = page.evaluate("window.__pw.rel")
+    assert abs(rel["fwd"]) < 0.06 and abs(rel["side"]) < 0.06, f"降落時沒有對準手掌：{rel}"
+    assert 0.15 <= rel["above"] <= 0.55, rel
     page.wait_for_function("window.__gcs.S.tel.flying === false", timeout=10000)
     page.wait_for_function("document.querySelector('#toasts').textContent.includes('已停在手上')", timeout=3000)
     until(lambda: not stack.mock.w.motors, 6.0, "模擬器的馬達應該停止")
+    # 落地後切回前鏡頭
+    until(lambda: stack.mock.w.camera == 0, 4.0, "要切回前鏡頭")
+    page.wait_for_function("window.__gcs.follow.cam === 'front'", timeout=3000)
+    assert errors == []
+
+
+def test_palm_landing_tof_only_when_downvision_unsupported(browser, stack):
+    stack.mock.o.downvision = False                 # 舊韌體：downvision 回 unknown command
+    page, errors = geo_page(browser)
+    page.evaluate("window.__pw.side = 0")
+    page.evaluate("window.__pw.arms = { r: 'forward' }")
+    wait_phase(page, "palm-approach", 4000)
+    page.wait_for_function("window.__gcs.follow.palm.mode === 'tof'", timeout=25000)
+    assert page.evaluate("window.__gcs.follow.cam") == "front"
+    page.wait_for_function("document.querySelector('#toasts').textContent.includes('無法切到下視鏡頭')", timeout=3000)
+    drive_palm(page, stack)
+    rel = page.evaluate("window.__pw.rel")
+    assert abs(rel["fwd"]) < 0.12, rel
+    page.wait_for_function("window.__gcs.S.tel.flying === false", timeout=10000)
     assert errors == []
 
 
@@ -301,6 +368,40 @@ def test_palm_landing_cancel_by_stick(browser, stack):
     page.evaluate("window.__pw.open = false; window.__pw.arms = { r: 'forward' }")
     page.wait_for_timeout(2000)
     assert page.evaluate("window.__gcs.follow.phase") == "follow"
+    # 已經切到下視鏡頭時取消 → 切回前鏡頭，繼續跟同一個人（下視期間不算目標遺失）
+    target = st(page)["target"]
+    page.evaluate("window.__pw.open = true; window.__pw.arms = {}")
+    page.wait_for_timeout(300)
+    page.evaluate("window.__pw.arms = { r: 'forward' }")
+    page.wait_for_function("window.__gcs.follow.cam === 'down'", timeout=25000)
+    page.wait_for_timeout(3500)                                  # 下視超過 3 秒（追蹤的遺失時間）
+    page.evaluate("window.__axes([0.6, 0, 0, 0])")
+    page.wait_for_function("window.__gcs.follow.cam === 'front'", timeout=4000)
+    page.evaluate("window.__axes([0, 0, 0, 0]); window.__pw.arms = {}")
+    until(lambda: stack.mock.w.camera == 0, 3.0, "要切回前鏡頭")
+    wait_phase(page, "follow", 5000)
+    assert st(page)["target"] == target
+    assert "land" not in stack.mock.commands()
+    assert errors == []
+
+
+def test_downcam_test_toggle(browser, stack):
+    """按 C 切到下視鏡頭（測試畫面方向）：跟隨暫停、懸停；手在機身前方時要顯示「前方」。"""
+    page, errors = geo_page(browser)
+    # 握拳（不觸發停到手上）、手在機身前方 15 cm、低於機身
+    page.evaluate("Object.assign(window.__pw, { open: false, arms: { r: 'forward' }, dist: 0.7, side: 0, handZ: 0.4 })")
+    page.keyboard.press("c")
+    wait_phase(page, "downcam", 4000)
+    assert stack.mock.w.camera == 1
+    until(lambda: stack.mock.w.rc == (0, 0, 0, 0), 2.0, f"模擬器 rc {stack.mock.w.rc}")
+    try:
+        page.wait_for_function("window.__gcs.follow.downHand && window.__gcs.follow.downHand.fwd > 0.08", timeout=3000)
+    except Exception:
+        raise AssertionError(page.evaluate("JSON.stringify({rel: window.__pw.rel, dh: window.__gcs.follow.downHand, h: window.__gcs.S.tel.h})"))
+    page.evaluate("Object.assign(window.__pw, { arms: {}, dist: 2.2 })")     # 人回到原本的距離
+    page.keyboard.press("c")
+    wait_phase(page, "follow", 4000)
+    assert stack.mock.w.camera == 0
     assert errors == []
 
 

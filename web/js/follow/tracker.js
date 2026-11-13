@@ -32,6 +32,12 @@ export class Tracker {
 
   reset() { this.tracks = []; this.targetId = null; }
 
+  /** 偵測暫停了 ms（例如切到下視鏡頭）：時間往後推，暫停期間不算遺失 */
+  shift(ms) {
+    if (!(ms > 0)) return;
+    for (const t of this.tracks) t.seen += ms;
+  }
+
   /** @param dets describePerson() 的結果（可帶 feat） @param now 毫秒 */
   update(dets, now) {
     const pairs = [];

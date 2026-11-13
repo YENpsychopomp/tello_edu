@@ -35,10 +35,11 @@ def test_rc_command_format():
 
 # ---------------------------------------------------------------- 白名單
 def test_whitelist():
-    for c in ("takeoff", "land", "emergency", "streamon", "streamoff", "flip f", "wifi?", "battery?"):
+    for c in ("takeoff", "land", "emergency", "streamon", "streamoff", "flip f", "wifi?", "battery?",
+              "downvision 0", "downvision 1"):
         assert is_allowed(c)
     for c in ("reboot", "motoron", "go 100 0 0 50", "rc 0 0 0 0", "command", "", "land; emergency",
-              "ap ssid pass", "wifi ssid pass", "speed 100"):
+              "ap ssid pass", "wifi ssid pass", "speed 100", "downvision 2", "downvision"):
         assert not is_allowed(c)
     assert IMMEDIATE_CMDS == {"land", "emergency"}
     assert not (set(ASK_CMDS) & IMMEDIATE_CMDS)
@@ -80,6 +81,7 @@ def test_parse_wifi():
 
 def test_classify():
     assert classify("ok") == "ok"
+    assert classify("unknown command: downvision") == "error"     # 舊韌體不認得的指令
     assert classify("error") == "error"
     assert classify("error Motor stop") == "error"
     assert classify("timeout") == "timeout"

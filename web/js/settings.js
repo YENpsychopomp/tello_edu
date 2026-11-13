@@ -8,6 +8,8 @@ export const DEFAULTS = Object.freeze({
   videoMode: 'auto',
   vibration: true,
   keyboard: true,
+  downEdge: 'up',      // 下視鏡頭畫面哪一邊是機頭方向
+  downMirror: false,   // 下視鏡頭畫面左右鏡像
 });
 
 const num = (v, lo, hi, d) => (Number.isFinite(+v) ? Math.min(hi, Math.max(lo, +v)) : d);
@@ -21,6 +23,8 @@ export function sanitize(raw) {
     videoMode: ['auto', 'webcodecs', 'mjpeg'].includes(r.videoMode) ? r.videoMode : DEFAULTS.videoMode,
     vibration: typeof r.vibration === 'boolean' ? r.vibration : DEFAULTS.vibration,
     keyboard: typeof r.keyboard === 'boolean' ? r.keyboard : DEFAULTS.keyboard,
+    downEdge: ['up', 'right', 'down', 'left'].includes(r.downEdge) ? r.downEdge : DEFAULTS.downEdge,
+    downMirror: typeof r.downMirror === 'boolean' ? r.downMirror : DEFAULTS.downMirror,
   };
 }
 

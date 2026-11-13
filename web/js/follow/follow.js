@@ -6,13 +6,14 @@ import { applyGesture, armWindow, clampSetpoint, followRc, slew } from './contro
 import { GESTURES, GestureLatch, classifyPose } from './gestures.js';
 import { LM, inBox } from './geometry.js';
 import { HandDetector } from './hand.js';
-import { PALM, PalmLander, armForward, detectPalm, handInfo, matchHand } from './palm.js';
+import { PALM, PalmLander, armForward, detectPalm, downToBody, handInfo, matchHand, pickDownHand } from './palm.js';
 import { PoseDetector } from './pose.js';
 import { Tracker } from './tracker.js';
 
 export const RESUME_MS = 1000;       // 搖桿放開多久後恢復跟隨
 export const STALE_MS = 450;         // 目標多久沒更新就視為遺失 → 懸停
 const DETECT_MS = 80;                // 偵測間隔上限（約 12 Hz）
+const DOWN_IGNORE_MS = 500;          // 剛切到下視鏡頭時，前鏡頭的舊畫面還在路上 → 先不偵測
 
 export const PHASE = {
   off: ['none', '關閉'],
@@ -27,10 +28,16 @@ export const PHASE = {
   resume: ['warn', '即將恢復跟隨…'],
   lost: ['danger', '目標遺失 → 懸停中'],
   'palm-approach': ['warn', '停到手上：飛向手掌…'],
-  'palm-hold': ['warn', '停到手上：把手掌移到機身正下方'],
+  'palm-switch': ['warn', '停到手上：切換到下視鏡頭…'],
+  'palm-climb': ['warn', '停到手上：升到手掌上方的高度'],
+  'palm-seek': ['warn', '停到手上：往前移到手掌上方…'],
+  'palm-align': ['warn', '停到手上：用下視鏡頭對準手掌'],
+  'palm-settle': ['warn', '停到手上：手掌在正下方，準備降落'],
   'palm-land': ['ok', '停到手上：降落中'],
+  downcam: ['warn', '下視鏡頭（測試）：跟隨暫停，懸停中'],
 };
-const PALM_PHASE = { approach: 'palm-approach', hold: 'palm-hold', landing: 'palm-land' };
+const PALM_PHASE = { approach: 'palm-approach', switch: 'palm-switch', climb: 'palm-climb', seek: 'palm-seek',
+  align: 'palm-align', settle: 'palm-settle', landing: 'palm-land' };
 
 const SKELETON = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]];
 
@@ -44,6 +51,8 @@ export class FollowMode {
    * @param o.notify   (level, title, text) => void
    * @param o.buzz     (pattern) => void
    * @param o.onChange () => void   狀態有變時通知 UI
+   * @param o.command  (cmd) => Promise<{kind}>  送 SDK 指令（land、downvision）
+   * @param o.downOrient () => {edge, mirror}   下視鏡頭畫面方向（設定）
    */
   constructor(o) {
     Object.assign(this, o);
@@ -54,7 +63,14 @@ export class FollowMode {
     this.palmSide = null;        // 'l' | 'r'：哪一隻手要停
     this.palmHand = null;        // {x, y, dist, open, seen}
     this.palmSavedSp = null;     // 開始前的設定值（取消時恢復，無人機會退回原本的距離）
-    this.fakeHands = null;       // E2E：() => 手部偵測結果
+    this.fakeHands = null;       // E2E：(now, cam) => 手部偵測結果
+    this.cam = 'front';          // 目前的影像來源：'front' | 'down'
+    this.camWant = 'front';
+    this.camBusy = false;
+    this.camAsked = false;
+    this.downFrom = 0;           // 這個時間之後的畫面才是下視鏡頭
+    this.downSince = 0;
+    this.downHand = null;        // 下視鏡頭裡的手 {x, y, right, fwd, seen}
     this.handError = '';
     this.tracker = new Tracker();
     this.latch = new GestureLatch();
@@ -125,6 +141,8 @@ export class FollowMode {
     this.paused = false;
     this.palm.reset();
     this.palmHand = null;
+    this.camAsked = false;
+    if (this.cam === 'down' || this.camBusy) this._setCam('front');
     this.tracker.reset();
     this.people = [];
     this.rc = [0, 0, 0, 0];
@@ -173,6 +191,16 @@ export class FollowMode {
     const src = this.canvas;
     const frames = this.frameCount ? this.frameCount() : 0;
     const due = now - this.lastDetect >= DETECT_MS;
+    if (this.cam === 'down' || this.camBusy) {
+      // 下視鏡頭：只找手（看不到人，追蹤先凍結）
+      if (due && this.cam === 'down' && now >= this.downFrom && (this.fakeHands || (this.hands.ready && this.hasVideo() && frames !== this.lastFrames))) {
+        this.lastDetect = now;
+        this.lastFrames = frames;
+        this._onDown(now);
+      }
+      this._draw(now);
+      return;
+    }
     if (due && (this.fake || (this.detector.ready && this.hasVideo() && frames !== this.lastFrames))) {
       this.lastDetect = now;
       this.lastFrames = frames;
@@ -187,6 +215,62 @@ export class FollowMode {
       if (now - this._fpsT >= 1000) { this.fps = Math.round((this._fpsN * 1000) / (now - this._fpsT)); this._fpsN = 0; this._fpsT = now; }
     }
     this._draw(now);
+  }
+
+  _onDown(now) {
+    let hands = [];
+    try { hands = this.fakeHands ? this.fakeHands(now, 'down') : this.hands.detect(this.canvas); } catch (e) { hands = []; }
+    const aspect = this.canvas.width / this.canvas.height || 4 / 3;
+    const p = pickDownHand(hands || [], aspect);
+    if (p) this.downHand = { ...p, ...downToBody(p.x, p.y, this.downOrient ? this.downOrient() : {}), seen: now };
+    this._set();
+  }
+
+  /** 切換影像來源（downvision）。可以連續呼叫：以最後一次想要的為準 */
+  async _setCam(want) {
+    this.camWant = want;
+    if (this.camBusy) return this.cam === want;
+    this.camBusy = true;
+    let ok = true;
+    try {
+      while (this.cam !== this.camWant) {
+        const target = this.camWant;
+        let r = null;
+        try { r = this.command ? await this.command(`downvision ${target === 'down' ? 1 : 0}`) : null; } catch (e) { r = null; }
+        ok = !!r && r.kind === 'ok';
+        const now = performance.now();
+        if (target === 'down') {
+          if (!ok) { this.camWant = 'front'; break; }
+          this.cam = 'down';
+          this.downFrom = now + DOWN_IGNORE_MS;
+          this.downSince = now;
+          this.downHand = null;
+        } else {
+          // 切回前鏡頭：失敗也當作切回（不能卡在下視）；凍結期間不算目標遺失
+          this.cam = 'front';
+          this.downHand = null;
+          this.tracker.shift(now - this.downSince);
+          this.latch.reset();
+          if (!ok) this.notify('warn', '切回前鏡頭失敗', '請按 Y 關閉再開啟影像');
+        }
+      }
+    } finally {
+      this.camBusy = false;
+      this._set();
+    }
+    return ok && this.cam === want;
+  }
+
+  /** 測試用：手動切換下視鏡頭（跟隨暫停、懸停），確認畫面方向設定正確 */
+  async toggleDownCam() {
+    if (!this.enabled) { this.notify('warn', '下視鏡頭', '請先開啟跟隨模式（需要手部模型）'); return; }
+    if (this.palm.active) { this.notify('warn', '下視鏡頭', '停到手上進行中，會自動切換'); return; }
+    const want = this.cam === 'down' ? 'front' : 'down';
+    const ok = await this._setCam(want);
+    if (want === 'down') {
+      this.notify(ok ? 'ok' : 'warn', ok ? '下視鏡頭（測試）' : '無法切到下視鏡頭',
+        ok ? '把手放到機身下方，看畫面上的「手在機身…」方向對不對；再按一次 C 切回' : '這台 Tello 的韌體可能不支援 downvision');
+    } else this.notify('info', '已切回前鏡頭', '');
   }
 
   _onDetections(dets, now) {
@@ -246,13 +330,15 @@ export class FollowMode {
     this.paused = false;
     this.palm.start(now);
     this.lastGesture = { g: 'palm', at: now };
-    this.notify('warn', '手勢：停到手上', '飛向你的手；靠近後請把手掌移到機身正下方。推搖桿或做 T 字可以取消');
+    this.notify('warn', '手勢：停到手上', '飛向你的手 → 切到下視鏡頭 → 自動移到手掌上方對準後降落。手保持張開、不要動；推搖桿可以隨時取消');
     this.buzz('tap');
   }
 
   _endPalm(level, title, text) {
     this.palm.reset();
     this.palmHand = null;
+    this.camAsked = false;
+    if (this.cam === 'down' || this.camBusy) this._setCam('front');
     if (this.palmSavedSp) { this.sp = this.palmSavedSp; this.palmSavedSp = null; }
     this.notify(level, title, text);
     this.buzz(level === 'ok' ? 'land' : 'warn');
@@ -299,7 +385,11 @@ export class FollowMode {
       this.palmSavedSp = null;
     }
     if (!this.enabled || !this.isPilot() || !flying) {
-      if (this.palm.active && this.palm.phase !== 'landing') this.palm.reset();
+      if (this.palm.active && this.palm.phase !== 'landing') {
+        this.palm.reset();
+        this.camAsked = false;
+        if (this.cam === 'down') this._setCam('front');
+      }
       this.rc = [0, 0, 0, 0];
       this.wasManual = false;
       this._set(flying);
@@ -320,19 +410,38 @@ export class FollowMode {
 
     // 停到手上：由 PalmLander 接手控制
     if (this.palm.active) {
+      // 切換鏡頭（只問一次；韌體不支援 → 只用 ToF）
+      if (this.palm.phase === 'switch' && !this.camAsked) {
+        this.camAsked = true;
+        this._setCam('down').then((ok) => {
+          if (!ok && this.palm.phase === 'switch') this.notify('warn', '無法切到下視鏡頭', '改用下方 ToF：往前移到手掌上方，偵測到手就降落');
+          this.palm.camResult(ok, performance.now());
+        });
+      }
       const hand = this.palmHand && now - this.palmHand.seen <= STALE_MS ? this.palmHand : null;
+      const dh = this.downHand;
+      const down = this.cam === 'down' && dh && now - dh.seen <= STALE_MS ? { right: dh.right, fwd: dh.fwd } : null;
+      const vg = Number.isFinite(tel.vgx) && Number.isFinite(tel.vgy) ? Math.hypot(tel.vgx, tel.vgy) * 0.1 : null;  // dm/s → m/s
       const r = this.palm.update({
-        now, hand, flying,
+        now, hand, down, flying,
         distMin: fresh && Number.isFinite(tgt.distMin) ? tgt.distMin : null,
         tof: Number.isFinite(tel.tof) ? tel.tof : null,
+        h: Number.isFinite(tel.h) ? tel.h : null,
+        speed: vg,
       });
       if (r.land) {
-        this.notify('ok', '偵測到手掌在正下方', '降落到手上');
+        this.notify('ok', this.palm.mode === 'cam' ? '已對準手掌' : '偵測到手掌在正下方', '降落到手上');
         if (this.command) this.command('land');
       }
       if (this.palm.phase === 'abort') this._endPalm('warn', '已取消停到手上', this.palm.reason);
       this.why = [`palm-${this.palm.phase}`];
       this.rc = slew(this.rc, r.rc);
+      this._set(flying);
+      return this.rc;
+    }
+    if (this.cam === 'down' || this.camBusy) {       // 下視鏡頭測試中：看不到人 → 懸停
+      this.why = ['downcam'];
+      this.rc = slew(this.rc, [0, 0, 0, 0]);
       this._set(flying);
       return this.rc;
     }
@@ -375,6 +484,7 @@ export class FollowMode {
     else if (!this.fake && !this.detector.ready) p = 'loading';
     else if (!this.hasVideoOrFake()) p = 'no-video';
     else if (this.palm.active && (f || this.palm.phase === 'landing')) p = PALM_PHASE[this.palm.phase];
+    else if (this.cam === 'down') p = 'downcam';
     else if (!tgt) p = 'select';
     else if (!f) p = 'ready';
     else if (now - this.manualAt < 120) p = 'manual';
@@ -398,7 +508,9 @@ export class FollowMode {
       sp: this.sp, spInit: this.spInit, people: this.people.map((t) => t.id), fps: this.fps,
       ms: this.detector.ms, delegate: this.detector.delegate, rc: this.rc, why: this.why,
       paused: this.paused, gesture: this.lastGesture, hTarget: this.hTarget ?? null,
-      palm: { phase: this.palm.phase, side: this.palmSide, hand: this.palmHand, ready: this.handsReady, error: this.handError },
+      palm: { phase: this.palm.phase, mode: this.palm.mode, side: this.palmSide, hand: this.palmHand, ready: this.handsReady,
+        error: this.handError, under: this.palm.under, travel: this.palm.travel },
+      cam: this.cam, downHand: this.downHand,
     };
   }
 
@@ -414,6 +526,8 @@ export class FollowMode {
     const lw = Math.max(2, W / 320);
     g.font = `700 ${Math.round(H / 24)}px system-ui, sans-serif`;
     g.textBaseline = 'bottom';
+
+    if (this.cam === 'down') { this._drawDown(now, W, H, lw, col); return; }
 
     // 目標最後畫，標籤才不會被別人蓋住
     const order = [...this.tracker.tracks].sort((a, b) => (a.id === tid) - (b.id === tid));
@@ -451,12 +565,15 @@ export class FollowMode {
 
     // 停到手上：手掌要對準的位置（虛線框）＋偵測到的手
     if (this.palm.active) {
-      const zx = W / 2, zy = H * PALM.handY, zr = H * PALM.tol;
-      g.strokeStyle = col.warn; g.lineWidth = lw * 1.5; g.setLineDash([lw * 3, lw * 2]);
-      g.strokeRect(zx - zr * 1.2, zy - zr, zr * 2.4, zr * 2);
-      g.setLineDash([]);
+      const approach = this.palm.phase === 'approach';
+      if (approach) {
+        const zx = W / 2, zy = H * PALM.handY, zr = H * PALM.tol;
+        g.strokeStyle = col.warn; g.lineWidth = lw * 1.5; g.setLineDash([lw * 3, lw * 2]);
+        g.strokeRect(zx - zr * 1.2, zy - zr, zr * 2.4, zr * 2);
+        g.setLineDash([]);
+      }
       const h = this.palmHand;
-      if (h && now - h.seen <= STALE_MS) {
+      if (approach && h && now - h.seen <= STALE_MS) {
         g.fillStyle = h.open ? col.ok : col.warn;
         g.beginPath(); g.arc(h.x * W, h.y * H, lw * 4, 0, Math.PI * 2); g.fill();
         if (Number.isFinite(h.dist)) {
@@ -464,14 +581,7 @@ export class FollowMode {
           g.fillText(`手 約 ${Math.round(h.dist * 100)} cm`, h.x * W + lw * 6, h.y * H - lw * 2);
         }
       }
-      if (this.palm.phase === 'hold') {
-        const txt = '把手掌移到無人機正下方';
-        const tw = g.measureText(txt).width + 28, th = Math.round(H / 14);
-        g.fillStyle = 'rgba(11,15,20,.85)'; g.fillRect((W - tw) / 2, H * 0.16, tw, th);
-        g.fillStyle = col.warn; g.textBaseline = 'middle';
-        g.fillText(txt, (W - tw) / 2 + 14, H * 0.16 + th / 2);
-        g.textBaseline = 'bottom';
-      }
+      if (this.palm.phase !== 'approach') this._banner(PHASE[PALM_PHASE[this.palm.phase]][1], W, H, col.warn);
     }
 
     // 中央十字（跟隨的瞄準點）
@@ -481,6 +591,45 @@ export class FollowMode {
       g.moveTo(W / 2 - H / 30, H / 2); g.lineTo(W / 2 + H / 30, H / 2); g.stroke();
     }
 
+    this._drawGesture(now, W, H, lw, col);
+  }
+
+  _banner(txt, W, H, color) {
+    const g = this.ctx;
+    const tw = g.measureText(txt).width + 28, th = Math.round(H / 14);
+    g.fillStyle = 'rgba(11,15,20,.85)'; g.fillRect((W - tw) / 2, H * 0.16, tw, th);
+    g.fillStyle = color; g.textBaseline = 'middle';
+    g.fillText(txt, (W - tw) / 2 + 14, H * 0.16 + th / 2);
+    g.textBaseline = 'bottom';
+  }
+
+  // 下視鏡頭：中心是機身正下方；虛線框＝對準範圍；點＝偵測到的手；文字＝手在機身哪一邊（確認方向設定用）
+  _drawDown(now, W, H, lw, col) {
+    const g = this.ctx;
+    const r = H * PALM.downTol;
+    g.strokeStyle = col.warn; g.lineWidth = lw * 1.5; g.setLineDash([lw * 3, lw * 2]);
+    g.strokeRect(W / 2 - r * (W / H), H / 2 - r, r * 2 * (W / H), r * 2);
+    g.setLineDash([]);
+    g.strokeStyle = 'rgba(230,237,243,.6)'; g.lineWidth = lw;
+    g.beginPath(); g.moveTo(W / 2, H / 2 - H / 20); g.lineTo(W / 2, H / 2 + H / 20);
+    g.moveTo(W / 2 - H / 20, H / 2); g.lineTo(W / 2 + H / 20, H / 2); g.stroke();
+    const h = this.downHand;
+    let txt = now < this.downFrom ? '下視鏡頭：切換中…' : '下視鏡頭：沒有看到手';
+    if (h && now - h.seen <= STALE_MS) {
+      g.fillStyle = col.ok;
+      g.beginPath(); g.arc(h.x * W, h.y * H, lw * 5, 0, Math.PI * 2); g.fill();
+      g.strokeStyle = col.ok; g.lineWidth = lw * 1.5;
+      g.beginPath(); g.moveTo(W / 2, H / 2); g.lineTo(h.x * W, h.y * H); g.stroke();
+      const side = (v, pos, neg) => (Math.abs(v) < PALM.downTol ? '' : v > 0 ? pos : neg);
+      const where = [side(h.fwd, '前方', '後方'), side(h.right, '右方', '左方')].filter(Boolean).join('、');
+      txt = where ? `手在機身${where}` : '手在機身正下方 ✓';
+    }
+    this._banner(this.palm.active ? `${PHASE[PALM_PHASE[this.palm.phase]][1]} · ${txt}` : txt, W, H, col.warn);
+    this._drawGesture(now, W, H, lw, col);
+  }
+
+  _drawGesture(now, W, H, lw, col) {
+    const g = this.ctx;
     // 手勢累積進度
     const pend = this.latch.pending(now);
     const recent = this.lastGesture && now - this.lastGesture.at < 1500 ? this.lastGesture : null;

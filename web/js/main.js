@@ -67,6 +67,7 @@ const sock = new ControlSocket('/ws/control', {
 const LABEL = {
   takeoff: '起飛', land: '降落', emergency: '緊急停槳', streamon: '開啟影像', streamoff: '關閉影像',
   'flip f': '向前翻滾', 'flip b': '向後翻滾', 'flip l': '向左翻滾', 'flip r': '向右翻滾',
+  'downvision 1': '切到下視鏡頭', 'downvision 0': '切回前鏡頭',
 };
 const KIND = {
   ok: ['ok', '成功'], sent: ['ok', '已送出'], error: ['danger', '失敗'], timeout: ['warn', '逾時（沒有回應）'],
@@ -140,6 +141,10 @@ function act(name, arg) {
       follow.toggle();
       return;
     case 'followNext': follow.cycle(1); return;
+    case 'downcam':
+      if (!requirePilot()) return;
+      follow.toggleDownCam();
+      return;
     default:
   }
 }
@@ -181,6 +186,7 @@ const follow = new FollowMode({
   notify: (level, title, text) => { toast(level, title, text || ''); if (level !== 'info') addLog(level, `跟隨：${title}${text ? `（${text}）` : ''}`); },
   buzz: (p) => buzz(p),
   command: (c) => runCmd(c),
+  downOrient: () => ({ edge: settings.downEdge, mirror: settings.downMirror }),
   onChange: () => renderFollow(),
 });
 
@@ -554,6 +560,7 @@ const form = $('settingsForm');
 function fillSettings() {
   form.deadzone.value = settings.deadzone; form.expo.value = settings.expo; form.tempWarn.value = settings.tempWarn;
   form.videoMode.value = settings.videoMode; form.vibration.checked = settings.vibration; form.keyboard.checked = settings.keyboard;
+  form.downEdge.value = settings.downEdge; form.downMirror.checked = settings.downMirror;
   settingsLabels();
 }
 function settingsLabels() {
@@ -573,6 +580,7 @@ form.addEventListener('input', () => {
   settings = sanitize({
     deadzone: form.deadzone.value, expo: form.expo.value, tempWarn: form.tempWarn.value,
     videoMode: form.videoMode.value, vibration: form.vibration.checked, keyboard: form.keyboard.checked,
+    downEdge: form.downEdge.value, downMirror: form.downMirror.checked,
   });
   if (!saveSettings(settings)) toast('warn', '設定無法儲存', '瀏覽器封鎖了 localStorage；重新整理後會恢復預設');
   settingsLabels();

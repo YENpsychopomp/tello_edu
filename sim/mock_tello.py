@@ -35,6 +35,7 @@ class Options:
     activated: bool = True
     send_state: bool = True
     ignore_land: bool = False
+    downvision: bool = True       # False：模擬不支援下視鏡頭的舊韌體
     takeoff_delay: float = 1.5
     drain_s: float = 7.8          # 每掉 1% 電量的秒數（約 13 分鐘滿電）
     no_cmd_land: float = 15.0
@@ -59,6 +60,7 @@ class World:
     target_h: Optional[float] = None
     rc: tuple = (0, 0, 0, 0)
     below: float = 0.0            # 機身正下方有東西（例如手掌）比地面高出幾 cm → ToF 變短
+    camera: int = 0               # 0 前鏡頭、1 下視鏡頭（downvision）
 
 
 class MockTello(asyncio.DatagramProtocol):
@@ -179,6 +181,12 @@ class MockTello(asyncio.DatagramProtocol):
             self.reply(str(self.wifi), addr)
         elif cmd == "sdk?":
             self.reply("30", addr)
+        elif cmd in ("downvision 0", "downvision 1"):
+            if not self.o.downvision:
+                self.reply("unknown command: downvision", addr)
+            else:
+                w.camera = int(cmd[-1])
+                self.reply("ok", addr)
         elif cmd == "sn?":
             self.reply("0TQZSIMULATOR", addr)
         else:
@@ -315,12 +323,14 @@ def parse_args(argv: Optional[list[str]] = None) -> Options:
     p.add_argument("--no-state", action="store_true")
     p.add_argument("--no-video", action="store_true")
     p.add_argument("--ignore-land", action="store_true")
+    p.add_argument("--no-downvision", action="store_true", help="模擬不支援下視鏡頭的韌體")
     p.add_argument("--takeoff-delay", type=float, default=1.5)
     p.add_argument("--drain", type=float, default=7.8, help="每掉 1%% 電量的秒數")
     a = p.parse_args(argv)
     return Options(host=a.host, cmd_port=a.cmd_port, state_port=a.state_port, video_port=a.video_port,
                    battery=a.battery, temp=a.temp, activated=not a.not_activated,
                    send_state=not a.no_state, video=not a.no_video, ignore_land=a.ignore_land,
+                   downvision=not a.no_downvision,
                    takeoff_delay=a.takeoff_delay, drain_s=a.drain)
 
 
