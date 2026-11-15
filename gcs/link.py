@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import socket
 import time
 from typing import Any, Callable, Optional
@@ -89,6 +90,7 @@ class TelloLink:
         self._was_connected = False
         self.sent_log: list[str] = []      # 最近送出的非 rc 指令（給測試與診斷）
         self.limits = {"ceiling": config.CEILING_DEFAULT, "low_bat": config.LOW_BAT_LAND_DEFAULT}
+        self.info: dict[str, Any] = {"sdk": None, "sn": None}   # 連上後查一次 sdk? / sn?
         self.ceiling_hit_at = -1e9         # 最近一次因高度上限擋掉「上升」的時間
         self._lowbat_at = -1e9             # 最近一次低電量自動降落
 
@@ -185,6 +187,32 @@ class TelloLink:
             self._was_connected = True
             log.info("已連上 Tello（SDK 模式，狀態封包正常）")
             self.on_event("ok", "link_ok", "已連上 Tello")
+            if self.info["sdk"] is None:
+                asyncio.ensure_future(self._query_info())
+
+    async def _query_info(self) -> None:
+        """連上後查一次韌體 SDK 版本與序號（舊韌體 sdk? 會回 unknown command）。"""
+        await asyncio.sleep(0.3)
+        for key, cmd in (("sdk", "sdk?"), ("sn", "sn?")):
+            if not self.connected() or self.flying():
+                return
+            resp = await self.ask(cmd, 2.0, quiet=True)
+            if resp in ("timeout", "interrupted", "network error") or resp.startswith("error") or resp.startswith("unknown"):
+                self.info[key] = "unknown" if key == "sdk" else None
+                continue
+            self.info[key] = resp.strip()
+        sdk = self.sdk_version()
+        log.info("Tello 韌體 SDK %s，序號 %s", self.info["sdk"], self.info["sn"])
+        if sdk is not None and sdk < 20:
+            self.on_event("warn", "sdk_old", f"韌體 SDK {self.info['sdk']}：不支援 stop（任務中止用）與下視鏡頭，建議用官方 App 更新韌體")
+
+    def sdk_version(self) -> Optional[int]:
+        """sdk? 的回應轉成整數（'20' → 20、'30' → 30）；查不到回 None。"""
+        v = self.info.get("sdk")
+        if not isinstance(v, str):
+            return None
+        m = re.search(r"\d+", v)
+        return int(m.group()) if m else None
 
     # ------------------------------------------------------------ 指令
     def _drain(self) -> None:
@@ -440,5 +468,6 @@ class TelloLink:
             "last": self.last,
             "flight_n": self.flightlog.current.n if self.flightlog.current else None,
             "limits": dict(self.limits),
+            "info": dict(self.info),
             "ceiling_hit": now - self.ceiling_hit_at < 1.0,
         }

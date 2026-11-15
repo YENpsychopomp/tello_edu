@@ -88,8 +88,14 @@ function render() {
       ['送出 / 成功 / 逾時 / 錯誤', `${c.sent} / ${c.ok} / ${c.timeouts} / ${c.errors}`],
       ['最後指令', c.last_cmd ? `${c.last_cmd} → ${c.last_resp}` : '--'],
       ['SDK 模式', d.link.sdk ? '是' : '否'],
+      ['韌體 SDK 版本', d.link.info && d.link.info.sdk ? (d.link.info.sdk === 'unknown' ? '1.x（sdk? 無回應）' : d.link.info.sdk) : '--'],
+      ['序號', (d.link.info && d.link.info.sn) || '--'],
       ['網路錯誤', c.net_error || '無'],
     ]);
+
+    if (d.link.info && (d.link.info.sdk === 'unknown' || (d.link.sdk_version != null && d.link.sdk_version < 20))) {
+      add('warn', '韌體 SDK 版本太舊（1.x）', '任務腳本的中止（stop）、下視鏡頭（downvision）、任務墊都需要 SDK 2.0 以上。用官方 Tello App 連線更新韌體。');
+    }
 
     // ---------- 狀態
     if (st.pps > 0) H.stateWas = true;

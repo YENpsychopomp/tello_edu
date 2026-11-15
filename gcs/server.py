@@ -283,7 +283,7 @@ def create_app(settings: Optional[Settings] = None, checks: Optional[list] = Non
                      "target_ip": link.target[0] if link.target else None,
                      "state_port": link.state_port_bound, "video_port": video.port_bound,
                      "flying": link.flying(), "silenced": link.safety.silenced,
-                     "rc_count": link.rc_count},
+                     "rc_count": link.rc_count, "info": dict(link.info), "sdk_version": link.sdk_version()},
             "env": {"in_docker": s.in_docker, "sim": s.sim, "version": __version__,
                     "ffmpeg": video.mjpeg.available},
             "pilot": hub.pilot.id if hub.pilot else None,

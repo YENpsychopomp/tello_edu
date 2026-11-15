@@ -20,6 +20,7 @@ async def setup(safety=None, state_stale=3.0, **mock_kw):
     await link.start()
     mock.o.state_port = link.state_port_bound
     await wait_for(lambda: link.connected(), 3.0)
+    await wait_for(lambda: link.info["sn"] is not None, 3.0)   # 連上後的 sdk?/sn? 查詢做完再開始測
     return mock, link, events
 
 
@@ -65,7 +66,7 @@ def test_whitelist_blocks_unknown_commands():
         for bad in ("reboot", "motoron", "go 10 0 0 50", "wifi ssid pw", "command"):
             assert await link.command(bad) == "denied"
         await asyncio.sleep(0.1)
-        assert mock.commands() == ["command"]
+        assert [c for c in mock.commands() if c not in ("sdk?", "sn?")] == ["command"]
         await teardown(mock, link)
     run(go())
 
@@ -234,3 +235,24 @@ def test_shutdown_on_ground_does_not_send_land():
         assert "land" not in mock.commands()
         await mock.stop()
     run(go())
+
+
+def test_queries_sdk_and_serial_once_connected():
+    async def go():
+        mock, link, events = await setup()
+        await wait_for(lambda: link.info["sn"] is not None, 3.0)
+        assert link.info == {"sdk": "30", "sn": "0TQZSIMULATOR"}
+        assert link.sdk_version() == 30
+        assert "sdk_old" not in events
+        assert link.telemetry()["info"]["sdk"] == "30"
+        await teardown(mock, link)
+    run(go())
+
+
+def test_sdk_version_parsing_and_old_firmware_warning():
+    link = TelloLink(Settings(tello_host="127.0.0.1", cmd_port=9, state_port=0, video_port=0, sim=True))
+    assert link.sdk_version() is None
+    link.info["sdk"] = "20"
+    assert link.sdk_version() == 20
+    link.info["sdk"] = "unknown"
+    assert link.sdk_version() is None
