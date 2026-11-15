@@ -11,6 +11,7 @@ export const DEFAULTS = Object.freeze({
   downEdge: 'up',      // 下視鏡頭畫面哪一邊是機頭方向
   downMirror: false,   // 下視鏡頭畫面左右鏡像
   voice: true,         // 語音提示（警示用 zh-TW 語音唸出）
+  followSearch: true,  // 跟隨：目標遺失時自動原地旋轉搜尋
   ceilingOn: true,     // 啟用高度上限（由機長分頁送到後端執行）
   ceiling: 300,        // 高度上限（cm）
   lowBatLandOn: true,  // 啟用低電量自動降落
@@ -31,6 +32,7 @@ export function sanitize(raw) {
     downEdge: ['up', 'right', 'down', 'left'].includes(r.downEdge) ? r.downEdge : DEFAULTS.downEdge,
     downMirror: typeof r.downMirror === 'boolean' ? r.downMirror : DEFAULTS.downMirror,
     voice: typeof r.voice === 'boolean' ? r.voice : DEFAULTS.voice,
+    followSearch: typeof r.followSearch === 'boolean' ? r.followSearch : DEFAULTS.followSearch,
     ceilingOn: typeof r.ceilingOn === 'boolean' ? r.ceilingOn : DEFAULTS.ceilingOn,
     ceiling: Math.round(num(r.ceiling, 50, 1000, DEFAULTS.ceiling)),
     lowBatLandOn: typeof r.lowBatLandOn === 'boolean' ? r.lowBatLandOn : DEFAULTS.lowBatLandOn,

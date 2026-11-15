@@ -12,6 +12,30 @@ export class PoseDetector {
     this.lastTs = 0;
     this.ms = 0;               // 最近一次推論耗時
     this._feat = null;
+    // 手機／弱 CPU：把 960×720 先縮到 480 寬再推論（關鍵點是正規化座標，不用換算）。桌機 GPU 不縮。
+    this.maxWidth = PoseDetector.defaultMaxWidth();
+    this._scaled = null;
+    this.scaledSize = null;
+  }
+
+  static defaultMaxWidth() {
+    try {
+      const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+      const weak = (navigator.hardwareConcurrency || 8) <= 4;
+      return coarse || weak ? 480 : 0;
+    } catch (e) { return 0; }
+  }
+
+  /** 推論用的來源：需要縮圖時回傳縮過的 canvas */
+  _source(source, w, h) {
+    if (!this.maxWidth || w <= this.maxWidth) { this.scaledSize = null; return source; }
+    const sw = this.maxWidth, sh = Math.round((h * sw) / w);
+    if (!this._scaled) { this._scaled = document.createElement('canvas'); }
+    if (this._scaled.width !== sw || this._scaled.height !== sh) { this._scaled.width = sw; this._scaled.height = sh; }
+    const g = this._scaled.getContext('2d', { alpha: false });
+    g.drawImage(source, 0, 0, sw, sh);
+    this.scaledSize = [sw, sh];
+    return this._scaled;
   }
 
   get ready() { return !!this.lm; }
@@ -46,19 +70,21 @@ export class PoseDetector {
   /** @returns 人物陣列（describePerson 的結果＋衣服顏色特徵） */
   detect(source) {
     if (!this.lm) return [];
-    const w = source.width || source.videoWidth, h = source.height || source.videoHeight;
-    if (!w || !h) return [];
+    const w0 = source.width || source.videoWidth, h0 = source.height || source.videoHeight;
+    if (!w0 || !h0) return [];
+    const src = this._source(source, w0, h0);
+    const w = src.width, h = src.height;
     const ts = Math.max(this.lastTs + 1, performance.now());   // VIDEO 模式要求時間戳嚴格遞增
     this.lastTs = ts;
     const t0 = performance.now();
-    const res = this.lm.detectForVideo(source, ts);
+    const res = this.lm.detectForVideo(src, ts);
     this.ms = performance.now() - t0;
     const aspect = w / h;
     const out = [];
     for (const lms of res.landmarks || []) {
       const p = describePerson(lms, aspect);
       if (!p) continue;
-      p.feat = this._colorFeature(source, p, w, h);
+      p.feat = this._colorFeature(src, p, w, h);
       out.push(p);
     }
     return out;

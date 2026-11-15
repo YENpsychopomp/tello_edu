@@ -66,6 +66,13 @@ def main() -> int:
     else:
         print(f"\n控制頁面：http://localhost:{s.http_port}  ← 用 Chrome 或 Edge 開（一定要用 localhost）",
               flush=True)
+    if s.lan:
+        ips = s.lan_ips
+        urls = "、".join(f"http://{ip}:{s.public_port}" for ip in ips) or "（找不到這台電腦的 IP）"
+        print(f"手機／平板（連同一個 Wi-Fi）：{urls}", flush=True)
+        print("    LAN 模式：同一個 Wi-Fi 上的任何裝置都能開控制頁（第一個開的是機長，其他要按「接管」）。"
+              "Tello 的 Wi-Fi 預設沒有密碼，請只在可信任的環境使用。", flush=True)
+        print("    用 IP 開的頁面不是 secure context：影像走 MJPEG（需要 ffmpeg）、不能用實體手把，改用觸控搖桿。", flush=True)
     print(f"Tello 位址：{s.tello_host}:{s.cmd_port}；Ctrl+C 結束（在空中會先降落）\n", flush=True)
 
     app = create_app(s, checks=checks)

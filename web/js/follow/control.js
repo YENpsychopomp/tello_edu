@@ -23,7 +23,7 @@ export const LIMITS = Object.freeze({
 // 胸前交叉／T 字需要看到肩膀到髖部。上下各留 6% 的邊。
 export const FRAME = Object.freeze({ margin: 0.06, reach: 1.45 });
 
-const GAIN = { yaw: 130, fwd: 32, up: 0.55 };
+const GAIN = { yaw: 130, yawD: 40, fwd: 32, up: 0.55 };   // yawD：目標在畫面上的橫向速度（畫面寬/秒）的前饋／阻尼
 const DEAD = { yaw: 0.035, fwd: 0.2, up: 8 };
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -88,14 +88,23 @@ export function framedHeight(spHeight, win) {
  * @param target  {cx, dist|null, distMin, lms?, torso?, shoulder?}（null＝看不到目標）
  * @param sp      {dist, height}
  * @param height  目前高度 cm（null＝沒有遙測）
+ * @param opts    {vx?: 目標橫向速度（畫面寬/秒，估計器給的），gain?: 0.4–1 增益縮放（偵測 fps 低、延遲大時調小）}
  * @returns {{raw:number[], why:string[], hTarget:number|null, win:object|null}}  raw＝還沒做變化量限制的 rc
  */
-export function followRc(target, sp, height) {
+export function followRc(target, sp, height, opts = {}) {
   const why = [];
   if (!target) return { raw: [0, 0, 0, 0], why: ['no-target'], hTarget: null, win: null };
+  const gain = clamp(Number.isFinite(opts.gain) ? opts.gain : 1, 0.3, 1);
+  const vx = Number.isFinite(opts.vx) ? clamp(opts.vx, -1, 1) : 0;
 
   const ex = target.cx - 0.5;
-  let yaw = clamp(dead(ex, DEAD.yaw) * GAIN.yaw, -LIMITS.yaw, LIMITS.yaw);
+  // PD：比例項對準，速度項一方面在目標橫移時提早跟（前饋），一方面在機身轉向時減速（阻尼），抑制來回擺
+  const pTerm = dead(ex, DEAD.yaw) * GAIN.yaw;
+  let dTerm = vx * GAIN.yawD;
+  // 阻尼只能減速，不能把方向反過來（否則目標在右邊、機身正在右轉時會突然左轉）
+  if (pTerm !== 0 && Math.sign(dTerm) === -Math.sign(pTerm)) dTerm = Math.sign(dTerm) * Math.min(Math.abs(dTerm), Math.abs(pTerm) * 0.8);
+  let yaw = clamp((pTerm + dTerm) * gain, -LIMITS.yaw, LIMITS.yaw);
+  if (Math.abs(ex) <= DEAD.yaw && Math.abs(vx) < 0.05) yaw = 0;
 
   let fwd = 0;
   if (Number.isFinite(target.distMin) && target.distMin < LIMITS.minDist) {
@@ -104,7 +113,7 @@ export function followRc(target, sp, height) {
     if (target.dist < LIMITS.minDist) { fwd = -25; why.push('too-close'); }
     else {
       const cap = target.dist < 1.5 ? LIMITS.fwdNear : LIMITS.fwd;
-      fwd = clamp(dead(target.dist - sp.dist, DEAD.fwd) * GAIN.fwd, -LIMITS.fwd, cap);
+      fwd = clamp(dead(target.dist - sp.dist, DEAD.fwd) * GAIN.fwd * gain, -LIMITS.fwd, cap);
     }
     // 目標快跑出畫面邊緣時先轉向，前進減半
     if (fwd > 0 && Math.abs(ex) > 0.25) { fwd *= 0.5; why.push('turn-first'); }

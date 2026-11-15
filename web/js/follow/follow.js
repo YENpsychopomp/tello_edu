@@ -3,6 +3,8 @@
 // 手把／鍵盤介入：只要搖桿離開死區，rc 完全交給手動；放開 1 秒後自動恢復跟隨，
 // 並把「當下的高度與距離」當成新的設定值（介入就是調整構圖的方法）。
 import { applyGesture, armWindow, clampSetpoint, followRc, slew } from './control.js';
+import { TargetEstimator } from './estimator.js';
+import { Searcher } from './search.js';
 import { GESTURES, GestureLatch, classifyPose } from './gestures.js';
 import { LM, inBox } from './geometry.js';
 import { HandDetector } from './hand.js';
@@ -11,8 +13,12 @@ import { PoseDetector } from './pose.js';
 import { Tracker } from './tracker.js';
 
 export const RESUME_MS = 1000;       // 搖桿放開多久後恢復跟隨
-export const STALE_MS = 450;         // 目標多久沒更新就視為遺失 → 懸停
-const DETECT_MS = 80;                // 偵測間隔上限（約 12 Hz）
+export const STALE_MS = 450;         // 量測多久沒更新就算「沒看到」（估計器還會再預測 EST.predictMs）
+export const LOST_MS = 1000;         // 看不到目標多久開始自動搜尋
+export const VIDEO_STALL_MS = 700;   // 影像多久沒有新畫面就算中斷 → 懸停、不算目標遺失
+export const STALL_GIVEUP_MS = 8000; // 影像中斷太久 → 通知（持續懸停，交給人）
+const DETECT_MS = 80;                // 偵測間隔下限（約 12 Hz）；推論變慢時自動拉長，不讓偵測排隊
+const QUALITY_MIN = 0.55;            // 關鍵點平均可見度低於這個值的偵測當成花掉的畫面丟掉
 const DOWN_IGNORE_MS = 500;          // 剛切到下視鏡頭時，前鏡頭的舊畫面還在路上 → 先不偵測
 
 export const PHASE = {
@@ -27,6 +33,8 @@ export const PHASE = {
   manual: ['warn', '手動介入中'],
   resume: ['warn', '即將恢復跟隨…'],
   lost: ['danger', '目標遺失 → 懸停中'],
+  search: ['warn', '目標遺失 → 原地旋轉搜尋中'],
+  'video-stall': ['danger', '影像中斷 → 懸停中'],
   'palm-approach': ['warn', '停到手上：飛向手掌…'],
   'palm-switch': ['warn', '停到手上：切換到下視鏡頭…'],
   'palm-climb': ['warn', '停到手上：升到手掌上方的高度'],
@@ -40,6 +48,19 @@ const PALM_PHASE = { approach: 'palm-approach', switch: 'palm-switch', climb: 'p
   align: 'palm-align', settle: 'palm-settle', landing: 'palm-land' };
 
 const SKELETON = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]];
+
+/** 偵測品質：鼻子、肩、髖的平均可見度（沒有 visibility 欄位就當 1） */
+export function quality(d) {
+  if (!d || !Array.isArray(d.lms)) return 1;
+  let s = 0, n = 0;
+  for (const i of [0, 11, 12, 23, 24]) {
+    const p = d.lms[i];
+    if (!p) continue;
+    s += p.visibility === undefined ? 1 : p.visibility;
+    n++;
+  }
+  return n ? s / n : 1;
+}
 
 export class FollowMode {
   /**
@@ -73,6 +94,17 @@ export class FollowMode {
     this.downHand = null;        // 下視鏡頭裡的手 {x, y, right, fwd, seen}
     this.handError = '';
     this.tracker = new Tracker();
+    this.est = new TargetEstimator();   // 目標位置／距離的平滑與預測（抗掉幀、花屏）
+    this.search = new Searcher();       // 遺失時原地旋轉搜尋
+    this.autoSearch = o.autoSearch || (() => true);
+    this.lastFrameAt = 0;               // 最近一次有新影像畫面的時間
+    this.stalled = false;               // 影像中斷中
+    this.stallSince = 0;
+    this.stallWarned = false;
+    this.detPeriod = DETECT_MS;         // 偵測間隔的移動平均（ms），用來縮放增益
+    this.prevDetect = 0;
+    this.giveUpAt = -Infinity;          // 上次搜尋放棄的時間（短時間內不再自動搜）
+    this.fakeStall = null;              // E2E：() => true 代表影像沒有新畫面
     this.latch = new GestureLatch();
     this.enabled = false;
     this.paused = false;
@@ -106,6 +138,9 @@ export class FollowMode {
     this.everSelected = false;
     this.spInit = false;
     this.tracker.reset();
+    this.est.reset();
+    this.search.reset();
+    this.stalled = false; this.lastFrameAt = 0; this.stallWarned = false;
     this.latch.reset();
     this.overlay.hidden = false;
     this.overlay.classList.add('pick');
@@ -144,6 +179,8 @@ export class FollowMode {
     this.camAsked = false;
     if (this.cam === 'down' || this.camBusy) this._setCam('front');
     this.tracker.reset();
+    this.est.reset();
+    this.search.reset();
     this.people = [];
     this.rc = [0, 0, 0, 0];
     this.overlay.hidden = true;
@@ -167,16 +204,23 @@ export class FollowMode {
     this.everSelected = true;
     this.paused = false;
     this.latch.reset();
+    this.est.reset();
+    if (this.search.active) this._endSearch(false);
     this.spInit = false;                // 用目前的距離與高度當設定值
     this.buzz('tap');
     this.notify('ok', `跟隨目標：#${id}`, this.people.length > 1 ? '十字鍵 ←／→ 或點畫面上的人可以換目標' : '');
     this._set();
   }
 
-  _click(e) {
+  _click(e) { this.tapAt(e.clientX, e.clientY); }
+
+  /** 點畫面上的人（滑鼠或觸控的視窗座標）→ 選他 */
+  tapAt(clientX, clientY) {
     if (!this.enabled) return;
     const r = this.overlay.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+    if (!r.width || !r.height) return;
+    const x = (clientX - r.left) / r.width, y = (clientY - r.top) / r.height;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return;
     // 框重疊時選中心離點擊位置最近的人
     const d = (t) => Math.hypot(t.cx - x, (t.cy - y) * 0.5);
     const hit = this.people.filter((t) => inBox(t.box, x, y)).sort((a, b) => d(a) - d(b))[0];
@@ -190,7 +234,28 @@ export class FollowMode {
     this._lastNow = now;
     const src = this.canvas;
     const frames = this.frameCount ? this.frameCount() : 0;
-    const due = now - this.lastDetect >= DETECT_MS;
+    // 影像健康：有沒有新畫面？沒有就不偵測（舊畫面會算出舊位置），太久沒有就算中斷 → 懸停、不算目標遺失
+    const newFrame = this.fake ? !(this.fakeStall && this.fakeStall()) : (this.hasVideo() && frames !== this.lastFrames);
+    if (newFrame) {
+      if (this.stalled) {
+        const gap = now - this.stallSince;
+        this.tracker.shift(gap); this.est.shift(gap);     // 凍結期間不算目標消失
+        this.stalled = false; this.stallWarned = false;
+        this.notify('ok', '影像恢復', `中斷 ${(gap / 1000).toFixed(1)} 秒`);
+      }
+      this.lastFrameAt = now;
+    } else if (!this.stalled && this.hasVideoOrFake() && this.lastFrameAt && now - this.lastFrameAt > VIDEO_STALL_MS) {
+      this.stalled = true;
+      this.stallSince = this.lastFrameAt;
+    }
+    if (this.stalled && !this.stallWarned && now - this.stallSince > STALL_GIVEUP_MS) {
+      this.stallWarned = true;
+      this.notify('danger', '影像中斷超過 8 秒', '持續懸停。請用搖桿接手，或按 Y 關閉再開啟影像');
+      this.buzz('danger');
+    }
+    // 推論變慢（手機、CPU）時拉長間隔，不讓偵測排隊累積延遲
+    const interval = Math.max(DETECT_MS, (this.detector.ms || 0) * 1.3);
+    const due = now - this.lastDetect >= interval;
     if (this.cam === 'down' || this.camBusy) {
       // 下視鏡頭：只找手（看不到人，追蹤先凍結）
       if (due && this.cam === 'down' && now >= this.downFrom && (this.fakeHands || (this.hands.ready && this.hasVideo() && frames !== this.lastFrames))) {
@@ -201,7 +266,9 @@ export class FollowMode {
       this._draw(now);
       return;
     }
-    if (due && (this.fake || (this.detector.ready && this.hasVideo() && frames !== this.lastFrames))) {
+    if (due && newFrame && (this.fake || this.detector.ready)) {
+      if (this.prevDetect) this.detPeriod = this.detPeriod * 0.8 + Math.min(1000, now - this.prevDetect) * 0.2;
+      this.prevDetect = now;
       this.lastDetect = now;
       this.lastFrames = frames;
       let dets = [];
@@ -275,6 +342,8 @@ export class FollowMode {
 
   _onDetections(dets, now) {
     const hadTarget = this.tracker.targetId;
+    // 花掉的畫面：關鍵點可見度很低、或一幀裡冒出一堆「人」→ 當成沒有偵測
+    dets = dets.filter((d) => quality(d) >= QUALITY_MIN);
     this.people = this.tracker.update(dets, now);
     const tgt = this.tracker.target;
 
@@ -282,7 +351,13 @@ export class FollowMode {
       this.notify('danger', '目標遺失超過 3 秒', '保持懸停。用十字鍵 ←／→ 或點畫面重新選人，或用搖桿手動飛');
       this.buzz('warn');
     }
-    if (tgt && tgt.reacquired === now) this.notify('ok', `重新找到目標 #${tgt.id}`, '');
+    if (tgt && tgt.seen === now) {
+      if (this.search.active) {
+        // 搜尋中認到人：連續兩幀都對得上才算找回（避免轉動時一幀誤認）
+        if ((tgt.hitsSince || 0) >= 2) { this._endSearch(true, tgt.id); this.est.reset(); }
+      } else if (tgt.reacquired === now) this.notify('ok', `重新找到目標 #${tgt.id}`, '');
+      if (!this.search.active) this.est.feed({ cx: tgt.rawCx ?? tgt.cx, cy: tgt.rawCy ?? tgt.cy, dist: tgt.rawDist ?? tgt.dist }, now);
+    }
 
     // 一開始畫面只有一個人 → 自動選他；之後遺失了就一定要手動選，避免跟錯人
     if (!this.everSelected && this.tracker.targetId === null && this.people.length === 1 && this.people[0].hits >= 4) {
@@ -291,7 +366,7 @@ export class FollowMode {
     }
 
     const aspect = this.canvas.width / this.canvas.height || 4 / 3;
-    const fresh = tgt && tgt.seen === now;
+    const fresh = tgt && tgt.seen === now && !this.search.active;
     const palmOn = this.palm.active;
 
     // 手部模型：停到手上進行中（要追蹤手的位置），或目標有一隻手臂向前伸（可能要做「停到手上」）才跑
@@ -320,6 +395,32 @@ export class FollowMode {
       else if (fired) this._gesture(fired, now);
     } else this.latch.reset();
     this._set();
+  }
+
+  _startSearch(now, yaw) {
+    const side = this.est.exitSide();
+    this.search.start(now, side, yaw);
+    this.tracker.holdTarget = true;
+    this.tracker.searching = true;
+    this.notify('warn', '目標遺失 → 自動搜尋', `原地往${side > 0 ? '右' : '左'}旋轉找人（最多 20 秒）；推搖桿可中止`);
+    this.buzz('warn');
+  }
+
+  /** @param found true＝找回目標；false＝放棄或被中止 */
+  _endSearch(found, id, reason) {
+    const was = this.search.stage;
+    this.search.reset();
+    this.tracker.holdTarget = false;
+    this.tracker.searching = false;
+    if (found) {
+      this.notify('ok', `重新找到目標 #${id}`, '恢復跟隨');
+      this.buzz('tap');
+    } else if (reason === 'giveup') {
+      this.giveUpAt = performance.now();
+      this.tracker.dropTarget();
+      this.notify('danger', '找不到目標', '已停止搜尋，原地懸停。用十字鍵 ←／→ 或點畫面重新選人，或用搖桿手動飛');
+      this.buzz('danger');
+    } else if (was !== 'idle' && reason) this.notify('info', '已停止搜尋', reason);
   }
 
   _startPalm(cand, aspect, now) {
@@ -397,6 +498,7 @@ export class FollowMode {
     }
     if (manualActive) {
       if (this.palm.active && this.palm.phase !== 'landing') this._endPalm('warn', '已取消停到手上', '手動介入');
+      if (this.search.active) this._endSearch(false, null, '手動介入');
       this.manualAt = now;
       this.wasManual = true;
       this.rc = [0, 0, 0, 0];
@@ -407,6 +509,16 @@ export class FollowMode {
 
     const tgt = this.tracker.target;
     const fresh = tgt && now - tgt.seen <= STALE_MS;
+    const stalled = this.stalled && this.hasVideoOrFake();
+
+    // 影像中斷：懸停（不算目標遺失、不搜尋）。停到手上進行中也一樣先停
+    if (stalled && !(this.palm.phase === 'landing')) {
+      if (this.search.active) this._endSearch(false, null, '影像中斷');
+      this.why = ['video-stall'];
+      this.rc = slew(this.rc, [0, 0, 0, 0]);
+      this._set(flying);
+      return this.rc;
+    }
 
     // 停到手上：由 PalmLander 接手控制
     if (this.palm.active) {
@@ -458,13 +570,39 @@ export class FollowMode {
       }
     }
 
+    // 自動搜尋：目標消失超過 LOST_MS（估計器也推不下去了）→ 原地旋轉找；找到／放棄／介入時結束
+    const est = tgt && !this.search.active ? this.est.predict(now) : null;
+    if (this.search.active) {
+      const r = this.search.update(now, Number.isFinite(tel.yaw) ? tel.yaw : null);
+      if (r.stage === 'giveup') {
+        this._endSearch(false, null, 'giveup');
+        this.rc = slew(this.rc, [0, 0, 0, 0]);
+      } else {
+        this.why = [`search-${r.stage}`];
+        this.rc = slew(this.rc, r.rc);
+      }
+      this._set(flying);
+      return this.rc;
+    }
+    if (tgt && !fresh && !est && !this.paused && this.spInit && this.hasVideoOrFake() && this.autoSearch()
+      && now - tgt.seen >= LOST_MS && now - this.giveUpAt > 3000) {
+      this._startSearch(now, Number.isFinite(tel.yaw) ? tel.yaw : null);
+      this.why = ['search-hold'];
+      this.rc = slew(this.rc, [0, 0, 0, 0]);
+      this._set(flying);
+      return this.rc;
+    }
+
     let next = [0, 0, 0, 0];
     this.why = [];
-    if (fresh && !this.paused && this.spInit && this.hasVideoOrFake()) {
-      const r = followRc({ cx: tgt.cx, dist: tgt.dist, distMin: tgt.distMin, lms: tgt.lms, torso: tgt.torso, shoulder: tgt.shoulder },
-        this.sp, Number.isFinite(tel.h) ? tel.h : null);
+    if (tgt && est && !this.paused && this.spInit && this.hasVideoOrFake()) {
+      // 用估計器的位置／速度（平滑、補延遲、缺幀時預測），其餘幾何資料用最後一次偵測的
+      const gain = Math.max(0.45, Math.min(1, (1000 / Math.max(50, this.detPeriod)) / 10));
+      const r = followRc({ cx: est.cx, dist: est.dist, distMin: tgt.distMin, lms: tgt.lms, torso: tgt.torso, shoulder: tgt.shoulder },
+        this.sp, Number.isFinite(tel.h) ? tel.h : null, { vx: est.vx, gain });
       next = r.raw;
       this.why = r.why;
+      if (est.predicted && now - tgt.seen > STALE_MS) this.why.push('predicted');
       this.hTarget = r.hTarget;
     }
     this.rc = slew(this.rc, next);
@@ -489,13 +627,16 @@ export class FollowMode {
     else if (!f) p = 'ready';
     else if (now - this.manualAt < 120) p = 'manual';
     else if (now - this.manualAt < RESUME_MS) p = 'resume';
-    else if (now - tgt.seen > STALE_MS) p = 'lost';
+    else if (this.stalled && this.hasVideoOrFake()) p = 'video-stall';
+    else if (this.search.active) p = 'search';
+    else if (now - tgt.seen > STALE_MS && !this.est.predict(now)) p = 'lost';
     else if (this.paused) p = 'paused';
     else p = 'follow';
     if (p !== this.phase) {
       const old = this.phase;
       this.phase = p;
-      if (p === 'lost' && old === 'follow') { this.notify('warn', '看不到目標', '原地懸停，3 秒內回到畫面會自動找回'); this.buzz('warn'); }
+      if (p === 'lost' && old === 'follow') { this.notify('warn', '看不到目標', this.autoSearch() ? '原地懸停；1 秒內沒回來就自動旋轉搜尋' : '原地懸停，3 秒內回到畫面會自動找回'); this.buzz('warn'); }
+      if (p === 'video-stall') { this.notify('warn', '影像中斷', '沒有新的畫面 → 懸停；恢復後自動繼續跟隨'); this.buzz('warn'); }
       if (this.onChange) this.onChange();
     }
   }
@@ -511,6 +652,9 @@ export class FollowMode {
       palm: { phase: this.palm.phase, mode: this.palm.mode, side: this.palmSide, hand: this.palmHand, ready: this.handsReady,
         error: this.handError, under: this.palm.under, travel: this.palm.travel },
       cam: this.cam, downHand: this.downHand,
+      search: { active: this.search.active, stage: this.search.stage, rel: Math.round(this.search.rel), side: this.search.side },
+      stalled: this.stalled, detPeriod: Math.round(this.detPeriod), rejected: this.est.rejected,
+      est: this.est.predict(performance.now()),
     };
   }
 
@@ -582,6 +726,14 @@ export class FollowMode {
         }
       }
       if (this.palm.phase !== 'approach') this._banner(PHASE[PALM_PHASE[this.palm.phase]][1], W, H, col.warn);
+    }
+
+    if (this.stalled && this.hasVideoOrFake()) this._banner('影像中斷 → 懸停中', W, H, col.danger);
+    else if (this.search.active) {
+      const s = this.search;
+      const arrow = (s.stage === 'sweep2' ? -s.side : s.side) > 0 ? '→' : '←';
+      const txt = s.stage === 'hold' ? '目標遺失：先懸停…' : s.stage === 'spin' ? `搜尋中：轉一圈 ${arrow}` : `搜尋中：往${arrow === '→' ? '右' : '左'}轉 ${arrow}（${Math.round((performance.now() - s.t0) / 1000)} s）`;
+      this._banner(txt, W, H, col.warn);
     }
 
     // 中央十字（跟隨的瞄準點）

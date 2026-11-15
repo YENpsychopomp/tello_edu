@@ -76,7 +76,7 @@ class ControlHub:
             self.link.touch()
         self.clients.add(c)
         self.diag.ws_control = len(self.clients)
-        await c.send({"t": "hello", "role": self.role(c), "id": c.id, "sim": self.s.sim,
+        await c.send({"t": "hello", "role": self.role(c), "id": c.id, "sim": self.s.sim, "lan": self.s.lan,
                       "version": __version__, "events": self.events[-20:],
                       "mission": self.mission.status(), "mission_example": MISSION_EXAMPLE,
                       "config": {"hover_after": config.HOVER_AFTER, "land_after": config.LAND_AFTER,

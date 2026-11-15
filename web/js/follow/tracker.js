@@ -26,11 +26,21 @@ export class Tracker {
     this.tracks = [];
     this.nextId = 1;
     this.targetId = null;
+    this.holdTarget = false;     // true：目標消失也不移除（自動搜尋中）
+    this.searching = false;      // true：目標用「搜尋中」的寬鬆條件找回（位置不限，靠顏色／大小）
   }
 
   get target() { return this.tracks.find((t) => t.id === this.targetId) || null; }
 
-  reset() { this.tracks = []; this.targetId = null; }
+  reset() { this.tracks = []; this.targetId = null; this.holdTarget = false; this.searching = false; }
+
+  /** 放棄目標（搜尋失敗）：移除它，回到「請選擇」 */
+  dropTarget() {
+    this.tracks = this.tracks.filter((t) => t.id !== this.targetId);
+    this.targetId = null;
+    this.holdTarget = false;
+    this.searching = false;
+  }
 
   /** 偵測暫停了 ms（例如切到下視鏡頭）：時間往後推，暫停期間不算遺失 */
   shift(ms) {
@@ -44,7 +54,9 @@ export class Tracker {
     this.tracks.forEach((t, ti) => dets.forEach((d, di) => {
       const c = cost(t, d);
       // 閘門：離太遠，或衣服顏色明顯不同 → 不可能是同一個人。消失一陣子的人改用比較嚴格的「找回」條件
-      const ok = now - t.seen > GAP_MS ? this._reacquire(t, d) : c.d < 1.2 && (c.sim === null || c.sim > 0.45);
+      const gone = now - t.seen > GAP_MS;
+      const ok = gone && this.searching && t.id === this.targetId ? this._reacquireSearch(t, d, dets.length)
+        : gone ? this._reacquire(t, d) : c.d < 1.2 && (c.sim === null || c.sim > 0.45);
       if (ok) pairs.push({ ti, di, c: c.total });
     }));
     pairs.sort((a, b) => a.c - b.c);
@@ -65,7 +77,7 @@ export class Tracker {
 
     this.tracks = this.tracks.filter((t) => {
       const age = now - t.seen;
-      if (t.id === this.targetId) return age <= TARGET_KEEP_MS;
+      if (t.id === this.targetId) return this.holdTarget || age <= TARGET_KEEP_MS;
       return age <= TRACK_DROP_MS;
     });
     if (this.targetId !== null && !this.target) this.targetId = null;
@@ -80,11 +92,21 @@ export class Tracker {
     return near && ratio > 0.6 && ratio < 1.6 && (sim === null || sim > 0.7);
   }
 
+  /** 搜尋中（無人機在旋轉）：位置沒有參考價值，靠衣服顏色＋大小；沒有顏色特徵時只在畫面只有一個人時才敢認 */
+  _reacquireSearch(t, d, nDets) {
+    const ratio = d.h / Math.max(1e-3, t.h);
+    const sim = featSim(t.feat, d.feat);
+    if (sim !== null) return sim > 0.6 && ratio > 0.45 && ratio < 2.2;
+    return nDets === 1 && ratio > 0.5 && ratio < 2.0;
+  }
+
   _assign(t, d, now) {
-    if (t.hits && now - t.seen > GAP_MS) t.reacquired = now;
+    if (t.hits && now - t.seen > GAP_MS) { t.reacquired = now; t.hitsSince = 0; }
+    t.hitsSince = (t.hitsSince || 0) + 1;
     const a = t.hits ? 0.6 : 1;                 // 位置做一點平滑，降低框框抖動
     const lerp = (o, n) => (o === undefined ? n : o + (n - o) * a);
     t.cx = lerp(t.cx, d.cx); t.cy = lerp(t.cy, d.cy); t.h = lerp(t.h, d.h);
+    t.rawCx = d.cx; t.rawCy = d.cy; t.rawDist = d.dist;       // 未平滑的量測（給估計器：平滑會把亂跳稀釋、也多一拍延遲）
     t.box = d.box; t.lms = d.lms; t.torso = d.torso; t.shoulder = d.shoulder;
     t.dist = d.dist === null ? null : (t.dist == null ? d.dist : t.dist + (d.dist - t.dist) * 0.5);
     t.distMin = d.distMin;

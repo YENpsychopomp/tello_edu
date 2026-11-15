@@ -8,6 +8,7 @@ import { evaluatePreflight, shortId } from './preflight.js';
 import { Recorder, snapshot } from './recorder.js';
 import { DEFAULTS, loadSettings, saveSettings, sanitize } from './settings.js';
 import { toast } from './toast.js';
+import { TouchSticks } from './touch.js';
 import { Track, drawTrack } from './track.js';
 import { VideoPlayer } from './video.js';
 import { createVoice } from './voice.js';
@@ -212,6 +213,7 @@ const follow = new FollowMode({
   buzz: (p) => buzz(p),
   command: (c) => runCmd(c),
   downOrient: () => ({ edge: settings.downEdge, mirror: settings.downMirror }),
+  autoSearch: () => settings.followSearch,
   onChange: () => renderFollow(),
 });
 
@@ -222,6 +224,7 @@ function renderFollow() {
   line.querySelector('use').setAttribute('href', `#${ICON[f.level] || ICON.none}`);
   $('flwText').textContent = f.text;
   $('btnFollow').setAttribute('aria-pressed', String(f.enabled));
+  $('btnFollowM').setAttribute('aria-pressed', String(f.enabled));
   $('flwBtnText').textContent = f.enabled ? '關閉跟隨' : '開啟跟隨';
   $('flwPeople').hidden = !f.enabled;
   $('flwInfo').hidden = !f.enabled;
@@ -303,19 +306,26 @@ async function toggleRecord() {
 // =============================================================== 輸入迴圈（30 Hz）
 const pad = new GamepadInput();
 const kb = new KeyboardInput((a) => act(a), () => settings.keyboard);
+// 觸控搖桿（手機／平板）：影像左右下角；短按＝點選跟隨目標
+const touch = new TouchSticks($('touchL'), $('touchR'), { onTap: (x, y) => follow.tapAt(x, y) });
+if (touch.enabled) {
+  $('touchL').hidden = false; $('touchR').hidden = false;
+  document.body.classList.add('touch');
+}
 
 function inputTick() {
   const p = pad.poll(settings.deadzone, settings.expo);
   const k = kb.sticks();
+  const tch = touch.read();
   let sticks = p.sticks;
-  if (k.active) { sticks = k; S.src = '鍵盤'; } else S.src = p.connected ? '手把' : (settings.keyboard ? '鍵盤（待命）' : '無');
+  if (k.active) { sticks = k; S.src = '鍵盤'; } else if (tch.active) { sticks = tch; S.src = '觸控'; } else S.src = p.connected ? '手把' : touch.enabled ? '觸控（待命）' : (settings.keyboard ? '鍵盤（待命）' : '無');
   S.speed = p.speed;
   S.rc = sticksToRc(sticks, SPEED[S.speed].k);
   S.pad = p;
-  S.centered = !k.active && Object.values(p.sticks).every((v) => v === 0);
+  S.centered = !k.active && !tch.active && Object.values(p.sticks).every((v) => v === 0);
   S.rc = follow.mix(S.rc, !S.centered);      // 跟隨模式：搖桿一動就交給手動
   if (isPilot()) sock.send({ t: 'rc', v: S.rc });
-  drawSticks(sticks, p.connected || k.active);
+  drawSticks(sticks, p.connected || k.active || tch.active);
 
   if (p.connected && p.id !== S.padId) {
     S.padId = p.id;
@@ -457,7 +467,7 @@ function render() {
   $('flipState').textContent = fs.text;
 
   // ---- 飛前檢查
-  const pf = evaluatePreflight({ wsOpen, tel: t, pad: S.pad, sticksCentered: S.centered, isPilot: pilot });
+  const pf = evaluatePreflight({ wsOpen, tel: t, pad: S.pad, sticksCentered: S.centered, isPilot: pilot, touch: touch.enabled });
   S.pf = pf;
   renderPreflight(pf, t && t.flying);
   const tk = $('btnTakeoff');
@@ -720,7 +730,7 @@ const form = $('settingsForm');
 function fillSettings() {
   form.deadzone.value = settings.deadzone; form.expo.value = settings.expo; form.tempWarn.value = settings.tempWarn;
   form.videoMode.value = settings.videoMode; form.vibration.checked = settings.vibration; form.keyboard.checked = settings.keyboard;
-  form.voice.checked = settings.voice;
+  form.voice.checked = settings.voice; form.followSearch.checked = settings.followSearch;
   form.downEdge.value = settings.downEdge; form.downMirror.checked = settings.downMirror;
   form.ceiling.value = settings.ceiling; form.lowBatLand.value = settings.lowBatLand;
   form.ceilingOn.checked = settings.ceilingOn; form.lowBatLandOn.checked = settings.lowBatLandOn;
@@ -757,7 +767,7 @@ form.addEventListener('input', () => {
   settings = sanitize({
     deadzone: form.deadzone.value, expo: form.expo.value, tempWarn: form.tempWarn.value,
     videoMode: form.videoMode.value, vibration: form.vibration.checked, keyboard: form.keyboard.checked, voice: form.voice.checked,
-    downEdge: form.downEdge.value, downMirror: form.downMirror.checked,
+    downEdge: form.downEdge.value, downMirror: form.downMirror.checked, followSearch: form.followSearch.checked,
     ceiling: form.ceiling.value, lowBatLand: form.lowBatLand.value,
     ceilingOn: form.ceilingOn.checked, lowBatLandOn: form.lowBatLandOn.checked,
   });
@@ -776,6 +786,7 @@ $('btnVideo').addEventListener('click', () => act('video'));
 $('btnPhoto').addEventListener('click', () => act('photo'));
 $('btnRec').addEventListener('click', () => act('record'));
 $('btnFollow').addEventListener('click', () => act('follow'));
+$('btnFollowM').addEventListener('click', () => act('follow'));
 
 // 緊急停槳：滑鼠長按 1 秒，顯示進度環
 (() => {
@@ -829,9 +840,10 @@ addEventListener('popstate', () => history.pushState(null, '', location.href));
 addEventListener('beforeunload', (e) => { if (S.tel && S.tel.flying && isPilot()) { e.preventDefault(); e.returnValue = ''; } });
 
 if (!window.isSecureContext) {
-  toast('danger', '請改用 http://localhost:8080 開啟', '目前網址不是 secure context，手把與 WebCodecs 可能無法使用', 15000);
+  if (touch.enabled) toast('warn', '用 IP 開啟（LAN 模式）', '影像走 MJPEG 備援（延遲較高）；用觸控搖桿控制', 8000);
+  else toast('danger', '請改用 http://localhost:8080 開啟', '目前網址不是 secure context，手把與 WebCodecs 可能無法使用', 15000);
 }
 
 // 給 E2E 測試讀取狀態（不影響功能）
-window.__gcs = { S, get settings() { return settings; }, sock, player, follow, openMission, runMission, voice, track };
+window.__gcs = { S, get settings() { return settings; }, sock, player, follow, openMission, runMission, voice, track, touch };
 render();

@@ -193,6 +193,13 @@
           <div class="hud-safety" id="hudSafety" hidden></div>
           <div class="hud-safety hud-mission" id="hudMission" hidden></div>
         </div>
+        <!-- 觸控搖桿（手機／平板才顯示）：按下的位置就是中心 -->
+        <div class="touch-zone touch-left" id="touchL" hidden aria-label="觸控搖桿：升降／轉向">
+          <div class="tring"><div class="tdot"></div></div><span class="tlabel">升降／轉向</span>
+        </div>
+        <div class="touch-zone touch-right" id="touchR" hidden aria-label="觸控搖桿：前後／左右">
+          <div class="tring"><div class="tdot"></div></div><span class="tlabel">前後／左右</span>
+        </div>
       </div>
     </section>
 
@@ -246,6 +253,7 @@
       <button class="act" id="btnVideo" aria-pressed="false"><svg><use href="#i-video"/></svg><span>影像</span><kbd>Y</kbd></button>
       <button class="act" id="btnPhoto"><svg><use href="#i-photo"/></svg><span>拍照</span><kbd>P</kbd></button>
       <button class="act" id="btnRec" aria-pressed="false"><svg><use href="#i-rec"/></svg><span id="recLabel">錄影</span><kbd>R</kbd></button>
+      <button class="act act-mobile" id="btnFollowM" aria-pressed="false" title="開關跟隨模式"><svg><use href="#i-follow"/></svg><span>跟隨</span></button>
       <div class="act-sep" aria-hidden="true"></div>
       <button class="act act-emg" id="btnEmg" title="緊急停槳：長按 1 秒（手把 LB＋RB、鍵盤 Shift+Esc）">
         <svg class="emg-ring" viewBox="0 0 44 44"><circle cx="22" cy="22" r="19" class="ring-bg"/><circle cx="22" cy="22" r="19" class="ring-fg" id="emgRing"/></svg>
@@ -397,6 +405,7 @@
       </select>
       <small>開跟隨後按 <kbd>C</kbd> 切到下視鏡頭，手放到機身前方，畫面要顯示「手在機身前方」</small></label>
     <label class="check"><input type="checkbox" name="downMirror"> 下視鏡頭畫面左右鏡像</label>
+    <label class="check"><input type="checkbox" name="followSearch"> 跟隨：目標遺失時自動原地旋轉搜尋（最多 20 秒，推搖桿可中止）</label>
     <label class="check"><input type="checkbox" name="vibration"> 手把震動回饋</label>
     <label class="check"><input type="checkbox" name="voice"> 語音提示（起降、電量、連線、任務等用語音唸出）</label>
     <label class="check"><input type="checkbox" name="keyboard"> 啟用鍵盤控制</label>

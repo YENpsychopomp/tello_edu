@@ -565,6 +565,95 @@ def test_track_dead_reckoning(browser, stack):
     page.context.close()
 
 
+# ---------------------------------------------------------------- 手機／平板：觸控搖桿、直式版面
+def open_mobile(browser, w=390, h=844):
+    ctx = new_ctx(browser, viewport={"width": w, "height": h}, device_scale_factor=2, is_mobile=True, has_touch=True,
+                  color_scheme="dark")
+    ctx.add_init_script(FAKE_PAD + "\nwindow.__padOn = false;")      # 手機沒有手把（保留語音等 stub）
+    page = ctx.new_page()
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(URL)
+    page.wait_for_function("window.__gcs && window.__gcs.S.tel && window.__gcs.S.tel.connected", timeout=8000)
+    page.wait_for_function("window.__gcs.S.role === 'pilot'")
+    return page, errors
+
+
+def drag(page, x0, y0, x1, y1, steps=6, hold=0.5):
+    page.mouse.move(x0, y0)
+    page.mouse.down()
+    page.mouse.move(x1, y1, steps=steps)
+    page.wait_for_timeout(int(hold * 1000))
+
+
+def test_mobile_layout_and_touch_sticks(browser, stack):
+    page, errors = open_mobile(browser)
+    # 觸控裝置：觸控搖桿顯示、飛前檢查不要求手把 → 可以起飛
+    assert page.evaluate("window.__gcs.touch.enabled") is True
+    page.wait_for_selector("#touchR:not([hidden])")
+    page.wait_for_function("window.__gcs.S.pf && window.__gcs.S.pf.pass", timeout=5000)
+    assert "觸控搖桿" in page.locator("#pfList").inner_text()
+    # 直式版面：沒有水平捲軸、影像在最上面、底部動作列在畫面內
+    assert page.evaluate("document.documentElement.scrollWidth") <= 390
+    vb = page.locator("#videoFrame").bounding_box()
+    assert vb["y"] < 200 and abs(vb["width"] / vb["height"] - 4 / 3) < 0.05, vb
+    page.screenshot(path=str(SHOTS / "mobile-390x844.png"), full_page=False)
+    # 起飛（按鈕）
+    page.click("#btnTakeoff")
+    wait_cmd(stack, "takeoff")
+    page.wait_for_function("window.__gcs.S.tel.flying === true", timeout=6000)
+    # 右拇指區往上拖 → 前進；放開歸零
+    rb = page.locator("#touchR").bounding_box()
+    cx, cy = rb["x"] + rb["width"] / 2, rb["y"] + rb["height"] / 2
+    drag(page, cx, cy, cx, cy - 70)
+    page.wait_for_function("window.__gcs.S.src === '觸控' && window.__gcs.S.rc[1] > 40", timeout=2000)
+    wait_rc(stack, (0, 60, 0, 0), timeout=2.0)
+    page.mouse.up()
+    page.wait_for_function("window.__gcs.S.rc[1] === 0", timeout=2000)
+    wait_rc(stack, (0, 0, 0, 0), timeout=2.0)
+    # 左拇指區往右拖 → 轉向
+    lb = page.locator("#touchL").bounding_box()
+    lx, ly = lb["x"] + lb["width"] / 2, lb["y"] + lb["height"] / 2
+    drag(page, lx, ly, lx + 35, ly)
+    page.wait_for_function("window.__gcs.S.rc[3] > 10 && window.__gcs.S.rc[3] < 40", timeout=2000)   # 半推
+    page.mouse.up()
+    page.wait_for_function("window.__gcs.S.rc[3] === 0", timeout=2000)
+    # 短按（沒有拖）不算搖桿輸入
+    page.mouse.move(cx, cy); page.mouse.down(); page.wait_for_timeout(80); page.mouse.up()
+    page.wait_for_timeout(200)
+    assert page.evaluate("window.__gcs.S.rc") == [0, 0, 0, 0]
+    page.click("#btnLand")
+    wait_cmd(stack, "land")
+    assert errors == []
+    page.context.close()
+
+
+def test_mobile_touch_tap_selects_follow_target(browser, stack):
+    """手機上開跟隨：短按畫面上的人＝選他；拖＝介入。"""
+    page, errors = open_mobile(browser)
+    page.route("**/static/__test/synthetic.mjs",
+               lambda r: r.fulfill(status=200, content_type="text/javascript", body=(ROOT / "tests" / "js" / "synthetic.mjs").read_text(encoding="utf-8")))
+    page.evaluate("""async () => {
+      const { person } = await import('/static/__test/synthetic.mjs');
+      const { describePerson } = await import('/static/js/follow/geometry.js');
+      window.__gcs.follow.fake = () => [describePerson(person({ cx: 0.3, t: 0.19 }), 4 / 3), describePerson(person({ cx: 0.75, t: 0.19 }), 4 / 3)];
+    }""")
+    page.click("#btnFollow")
+    page.wait_for_function("window.__gcs.follow.status().people.length === 2", timeout=4000)
+    page.wait_for_function("window.__gcs.follow.phase === 'select'", timeout=2000)
+    page.locator("#videoFrame").scroll_into_view_if_needed()          # 點面板的按鈕會把頁面捲到下面
+    page.wait_for_timeout(200)
+    ov = page.locator("#followOverlay").bounding_box()
+    assert ov["y"] >= 0, ov
+    # 右邊那個人在觸控區裡（畫面下半）：短按 → 選中
+    page.mouse.move(ov["x"] + ov["width"] * 0.75, ov["y"] + ov["height"] * 0.7); page.mouse.down(); page.wait_for_timeout(60); page.mouse.up()
+    page.wait_for_function("window.__gcs.follow.status().target !== null", timeout=2000)
+    ids = page.evaluate("window.__gcs.follow.status().people")
+    assert page.evaluate("window.__gcs.follow.status().target") == ids[1]
+    assert errors == []
+    page.context.close()
+
+
 def test_settings_dialog_screenshot(browser, stack):
     page, errors = open_page(browser)
     page.click("#btnSettings")

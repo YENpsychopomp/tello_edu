@@ -168,6 +168,7 @@ def test_follow_closed_loop_gestures_override_and_targets(browser, stack):
 
 def test_follow_target_lost_for_good_needs_manual_pick(browser, stack):
     page, errors = follow_page(browser)
+    page.evaluate("window.__gcs.follow.autoSearch = () => false")      # 設定關掉自動搜尋時的行為
     page.evaluate("window.__world.people[0].bearing = 0")
     page.keyboard.press("g")                      # 鍵盤 G 也能開
     wait_phase(page, "ready")
@@ -188,6 +189,123 @@ def test_follow_target_lost_for_good_needs_manual_pick(browser, stack):
     press(page, MENU)
     wait_phase(page, "off", 2000)
     assert page.locator("#followOverlay").is_hidden()
+    assert errors == []
+    page.context.close()
+
+
+# ---------------------------------------------------------------- 強健性：影像中斷、掉幀、自動搜尋
+def _airborne_follow(browser, bearing=0):
+    page, errors = follow_page(browser)
+    page.evaluate(f"window.__world.people[0].bearing = {bearing}")
+    press(page, MENU)
+    wait_phase(page, "ready")
+    press(page, A)
+    page.wait_for_function("window.__gcs.S.tel.flying === true", timeout=6000)
+    wait_phase(page, "follow")
+    page.wait_for_function("window.__gcs.follow.spInit === true", timeout=3000)
+    return page, errors
+
+
+def test_follow_video_stall_hovers_and_keeps_target(browser, stack):
+    """影像凍結（沒有新畫面）→ 懸停、顯示影像中斷；恢復後直接繼續跟同一個人，不算遺失、不搜尋。"""
+    page, errors = _airborne_follow(browser, bearing=20)
+    page.wait_for_function("window.__gcs.follow.rc[3] > 0", timeout=3000)
+    tid = st(page)["target"]
+    page.evaluate("window.__stall = true; window.__gcs.follow.fakeStall = () => window.__stall")
+    wait_phase(page, "video-stall", 3000)
+    until(lambda: stack.mock.w.rc == (0, 0, 0, 0), msg=f"模擬器 rc {stack.mock.w.rc}")
+    page.wait_for_timeout(2500)                                   # 比 3 秒的目標保留還久也不能放掉
+    assert page.evaluate("window.__gcs.follow.phase") == "video-stall"
+    assert st(page)["target"] == tid and not st(page)["search"]["active"]
+    page.evaluate("window.__stall = false")
+    wait_phase(page, "follow", 2000)
+    assert st(page)["target"] == tid
+    assert "影像恢復" in page.locator("#toasts").inner_text()
+    assert errors == []
+    page.context.close()
+
+
+def test_follow_dropped_frames_keep_tracking_smoothly(browser, stack):
+    """偵測每兩幀缺一幀、偶爾整組缺 400 ms、偶爾一幀亂跳：仍持續跟隨（不進 lost），而且沒有把亂跳當真。"""
+    page, errors = _airborne_follow(browser, bearing=25)
+    page.evaluate("""() => {
+      const real = window.__gcs.follow.fake;
+      let n = 0;
+      window.__gcs.follow.fake = (now) => {
+        n++;
+        if (n % 2 === 0) return [];                                   // 每兩幀缺一幀
+        if (Math.floor(now / 3000) % 3 === 1 && (now % 3000) < 400) return [];   // 每 3 秒缺 400 ms
+        const d = real(now);
+        if (n % 17 === 0 && d.length) {                              // 偶爾一幀位置亂跳到左邊（花屏）
+          const j = { ...d[0], cx: 0.08, cy: 0.55 };
+          return [j];
+        }
+        if (n % 23 === 0 && d.length) {                              // 偶爾一幀關鍵點可見度很低（半張花屏）
+          return [{ ...d[0], lms: d[0].lms.map((q) => ({ ...q, visibility: 0.2 })) }];
+        }
+        return d;
+      };
+      window.__minYaw = 0; window.__jumps = 0;
+      setInterval(() => { const f = window.__gcs.follow; window.__minYaw = Math.min(window.__minYaw, f.rc[3]);
+        const e = f.est.predict(performance.now()); if (e && e.cx < 0.3) window.__jumps++; }, 33);
+    }""")
+    page.wait_for_timeout(4500)
+    phases = page.evaluate("window.__gcs.follow.phase")
+    assert phases in ("follow",), phases
+    s = st(page)
+    assert not s["search"]["active"]
+    assert page.evaluate("window.__minYaw") > -12, page.evaluate("window.__minYaw")   # 沒有因為亂跳的那一幀往左猛轉
+    assert page.evaluate("window.__jumps") == 0                                        # 估計位置從沒跟著亂跳
+    page.wait_for_function("Math.abs(window.__cx(25) - 0.5) < 0.06", timeout=8000)   # 還是能對準
+    assert errors == []
+    page.context.close()
+
+
+def test_follow_auto_search_finds_target_again(browser, stack):
+    """目標往右跑出畫面 → 1 秒後開始往右旋轉搜尋 → 看到同一個人（顏色相同）→ 恢復跟隨。"""
+    page, errors = _airborne_follow(browser, bearing=0)
+    page.wait_for_function("Math.abs(window.__cx(0) - 0.5) < 0.05", timeout=6000)
+    tid = st(page)["target"]
+    # 人快速往右移到 +95°（畫面水平視角 70° → 看不到）
+    page.evaluate("""() => {
+      const p = window.__world.people[0];
+      let k = 0;
+      const h = setInterval(() => { k++; p.bearing = Math.min(95, 8 * k); if (p.bearing >= 95) clearInterval(h); }, 80);
+    }""")
+    wait_phase(page, "search", 6000)
+    s = st(page)
+    assert s["search"]["side"] == 1 and s["target"] == tid
+    assert "自動搜尋" in page.locator("#toasts").inner_text()
+    until(lambda: stack.mock.w.rc[3] > 0 and stack.mock.w.rc[1] == 0 and stack.mock.w.rc[2] == 0, timeout=3.0,
+          msg=f"模擬器 rc {stack.mock.w.rc}")
+    wait_phase(page, "follow", 15000)
+    assert st(page)["target"] == tid
+    assert "重新找到目標" in page.locator("#toasts").inner_text()
+    page.wait_for_function("Math.abs(window.__cx(95) - 0.5) < 0.06", timeout=8000)
+    assert errors == []
+    page.context.close()
+
+
+def test_follow_auto_search_gives_up_and_stick_cancels(browser, stack):
+    """找不到：掃完就放棄 → 懸停、回到請選擇；搜尋中推搖桿立刻中止。"""
+    page, errors = _airborne_follow(browser, bearing=0)
+    page.evaluate("window.__gcs.follow.search.o = { ...window.__gcs.follow.search.o, maxMs: 5000 }")
+    page.evaluate("window.__world.people = []")
+    wait_phase(page, "search", 4000)
+    page.evaluate("window.__axes([0, 0, 0.9, 0])")                 # 推搖桿 → 中止
+    wait_phase(page, "manual", 2000)
+    assert not st(page)["search"]["active"]
+    page.evaluate("window.__axes([0, 0, 0, 0])")
+    # 放開後目標仍不見 → 再搜一次 → 5 秒上限到 → 放棄
+    wait_phase(page, "search", 5000)
+    page.wait_for_function("window.__gcs.follow.status().target === null", timeout=9000)
+    assert page.evaluate("window.__gcs.follow.phase") == "select"
+    assert "找不到目標" in page.locator("#toasts").inner_text()
+    until(lambda: stack.mock.w.rc == (0, 0, 0, 0), msg=f"模擬器 rc {stack.mock.w.rc}")
+    # 人回來也不會自動跟（要手動選）
+    page.evaluate("window.__world.people = [{ bearing: window.__gcs.S.tel.yaw, t: 0.19, arms: {}, feat: window.__world.red }]")
+    page.wait_for_timeout(1000)
+    assert page.evaluate("window.__gcs.follow.phase") == "select"
     assert errors == []
     page.context.close()
 

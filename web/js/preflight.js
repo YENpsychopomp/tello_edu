@@ -1,7 +1,7 @@
 // 飛前檢查：全部通過才允許起飛。純函式，回傳每一項的狀態與原因。
 export const MIN_TAKEOFF_BATTERY = 20;
 
-export function evaluatePreflight({ wsOpen, tel, pad, sticksCentered, isPilot }) {
+export function evaluatePreflight({ wsOpen, tel, pad, sticksCentered, isPilot, touch = false }) {
   const items = [];
   const connected = !!(wsOpen && tel && tel.connected);
   items.push({
@@ -16,14 +16,15 @@ export function evaluatePreflight({ wsOpen, tel, pad, sticksCentered, isPilot })
     title: `電量 > ${MIN_TAKEOFF_BATTERY}%`,
     detail: bat === null ? '尚未取得電量' : `目前 ${bat}%${bat <= MIN_TAKEOFF_BATTERY ? '，請換電池' : ''}`,
   });
+  const input = !!pad.connected || touch;
   items.push({
-    id: 'gamepad', ok: !!pad.connected, title: '手把已偵測',
+    id: 'gamepad', ok: input, title: touch && !pad.connected ? '控制方式：觸控搖桿' : '手把已偵測',
     detail: pad.connected ? (pad.mapping === 'standard' ? shortId(pad.id) : `${shortId(pad.id)}（非標準按鍵對應）`)
-      : '按一下手把任一鍵讓瀏覽器偵測（Chrome / Edge）',
+      : touch ? '影像左右下角的拇指區；接上手把會自動改用手把' : '按一下手把任一鍵讓瀏覽器偵測（Chrome / Edge）',
   });
   items.push({
-    id: 'sticks', ok: !!pad.connected && sticksCentered, title: '兩支搖桿都置中',
-    detail: !pad.connected ? '等待手把' : sticksCentered ? '置中' : '放開搖桿，讓它們回到中心',
+    id: 'sticks', ok: input && sticksCentered, title: '兩支搖桿都置中',
+    detail: !input ? '等待手把' : sticksCentered ? '置中' : '放開搖桿，讓它們回到中心',
   });
   const pass = items.every((i) => i.ok);
   const failed = items.filter((i) => !i.ok);

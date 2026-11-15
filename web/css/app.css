@@ -232,6 +232,8 @@ kbd {
 .act-land svg { color: var(--warn); }
 #btnRec[aria-pressed="true"] { border-color: var(--danger); color: var(--danger); background: var(--danger-bg); }
 .act-sep { width: 1px; background: var(--border); margin: 6px 6px; }
+.act-mobile { display: none; }                       /* 手機版面才顯示（桌機用左側面板或 G） */
+@media (max-width: 1100px) { .act-mobile { display: flex; } }
 .act-emg {
   width: 128px; background: var(--danger-bg); border: 2px solid var(--danger-fill); color: var(--danger);
   user-select: none; touch-action: none;
@@ -419,3 +421,52 @@ input[type="checkbox"] { accent-color: var(--accent); width: 18px; height: 18px;
 /* 航跡（速度推算） */
 #trackCanvas { display: block; width: 100%; height: auto; border-radius: var(--r-sm); border: 1px solid var(--border); margin-bottom: 4px; }
 #trackPanel .kv b { font-size: var(--fs-sm); }
+
+/* ================= 觸控搖桿（手機／平板） ================= */
+.touch-zone { position: absolute; bottom: 0; width: 50%; height: 48%; touch-action: none; user-select: none; -webkit-user-select: none; z-index: 3; }
+.touch-left { left: 0; } .touch-right { right: 0; }
+.touch-zone .tlabel { position: absolute; bottom: 8px; font-size: var(--fs-xs); color: rgba(230,237,243,.55); background: var(--hud-plate); padding: 2px 8px; border-radius: 999px; pointer-events: none; }
+.touch-left .tlabel { left: 10px; } .touch-right .tlabel { right: 10px; }
+.touch-zone .tring { position: absolute; width: 140px; height: 140px; margin: -70px 0 0 -70px; border-radius: 50%; border: 2px solid rgba(92,179,255,.55); background: rgba(92,179,255,.08); display: none; pointer-events: none; }
+.touch-zone.on .tring { display: block; }
+.touch-zone .tdot { position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; background: var(--accent); box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+
+/* ================= 手機／平板版面（窄螢幕或觸控） ================= */
+@media (max-width: 1100px) {
+  .app { display: flex; flex-direction: column; min-width: 0; min-height: 100vh; height: auto; }
+  .topbar { flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
+  .stat { padding: 2px 8px; gap: 6px; }
+  .stat-conn { min-width: 0; }
+  .stat-key { font-size: 22px; } .stat-mid { font-size: 18px; }
+  .stat-sub, .bat-side { display: none; }
+  .stat-icon { width: 18px; height: 18px; }
+  .topbar-spacer { display: none; }
+  .tools { margin-left: auto; }
+  .middle { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+  .video-wrap { order: -1; display: block; container-type: normal; }   /* size containment 會讓高度變 0，影像蓋到下面的面板 */
+  .video-frame { width: 100% !important; height: auto !important; aspect-ratio: 4 / 3; }
+  .side { overflow: visible; }
+  .hud-read { min-width: 0; padding: 4px 8px; } .hud-read b { font-size: 22px; } .hud-small b { font-size: 18px; }
+  .hud-heading b { font-size: 20px; }
+  .horizon { width: 40%; }
+  .hud-alert, .hud-safety { font-size: var(--fs-sm); padding: 5px 10px; white-space: normal; text-align: center; }
+  .bottombar { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 8px; position: sticky; bottom: 0; z-index: 6; background: var(--surface); border-top: 1px solid var(--border); }
+  .stickbox { display: none; }
+  .actions { flex-wrap: wrap; gap: 6px; }
+  .act { width: 72px; padding: 8px 4px; font-size: var(--fs-sm); }
+  .act svg { width: 26px; height: 26px; }
+  .act kbd { display: none; }
+  .act-emg { width: 96px; }
+  .act-sep { display: none; }
+  .dlg { width: 96vw; max-height: 92vh; overflow: auto; padding: 14px; }
+  .dlg-wide { width: 96vw; }
+  .help-grid .pad-art { display: none; }
+  .toasts { left: 8px; right: 8px; top: 8px; }
+  .link-alarm-box strong { font-size: 24px; }
+}
+body.touch .touch-zone { display: block; }
+
+@media (max-width: 1100px) {
+  .help-grid { grid-template-columns: 1fr; }
+  .toasts { width: auto; }
+}
