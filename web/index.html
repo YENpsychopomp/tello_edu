@@ -40,6 +40,7 @@
     <symbol id="i-eye" viewBox="0 0 24 24"><path d="M1.5 12S5.5 5 12 5s10.5 7 10.5 7-4 7-10.5 7S1.5 12 1.5 12z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
     <symbol id="i-flip" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18.5 2.5v4.5H14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-follow" viewBox="0 0 24 24"><circle cx="12" cy="7.5" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6.5 20a5.5 5.5 0 0 1 11 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M2 7V3h4M22 7V3h-4M2 17v4h4M22 17v4h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="3.5" cy="6" r="1.5" fill="currentColor"/><circle cx="3.5" cy="12" r="1.5" fill="currentColor"/><circle cx="3.5" cy="18" r="1.5" fill="currentColor"/></symbol>
     <symbol id="i-sim" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 20h8M12 16v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
   </defs>
 </svg>
@@ -137,6 +138,15 @@
           <div class="kv"><span>偵測</span><b id="flwFps">--</b></div>
         </div>
       </section>
+      <section class="panel" id="missionPanel" aria-labelledby="msnTitle">
+        <h2 id="msnTitle">任務腳本</h2>
+        <p class="role-line" id="msnLine" data-level="none"><svg><use href="#i-info"/></svg><span id="msnText">沒有任務</span></p>
+        <div class="msn-btns">
+          <button class="btn btn-small" id="btnMission" title="編輯／執行任務腳本（M）"><svg><use href="#i-list"/></svg><span>腳本</span><kbd>M</kbd></button>
+          <button class="btn btn-small btn-warn" id="btnMissionAbort" hidden><svg><use href="#i-stop"/></svg>中止</button>
+        </div>
+        <ol class="msn-steps" id="msnSteps" hidden></ol>
+      </section>
     </aside>
 
     <section class="video-wrap">
@@ -181,6 +191,7 @@
           </div>
           <div class="hud-rec" id="hudRec" hidden><svg><use href="#i-rec"/></svg><span>REC</span><b id="recTime">00:00</b></div>
           <div class="hud-safety" id="hudSafety" hidden></div>
+          <div class="hud-safety hud-mission" id="hudMission" hidden></div>
         </div>
       </div>
     </section>
@@ -198,7 +209,12 @@
       </section>
       <section class="panel panel-log">
         <h2>事件紀錄</h2>
+        <div class="flight-row" id="flightRow" hidden>
+          <svg><use href="#i-ok"/></svg><span id="flightSummary"></span>
+          <a id="flightCsv" class="mini-link" href="/api/flightlog.csv" title="下載這一趟的飛行紀錄（CSV：遙測、rc、指令）">CSV</a>
+        </div>
         <ol class="log" id="eventLog" aria-live="polite"></ol>
+        <a class="mini-link log-dl" id="btnFlightCsv" href="/api/flightlog.csv" title="每一筆遙測、送出的 rc 與指令、事件（最近 1 小時，含所有趟次）">下載完整飛行紀錄（CSV）</a>
       </section>
     </aside>
   </main>
@@ -318,7 +334,7 @@
           <li><kbd>W</kbd><kbd>S</kbd> 前／後　<kbd>A</kbd><kbd>D</kbd> 左／右</li>
           <li><kbd>↑</kbd><kbd>↓</kbd> 升／降　<kbd>←</kbd><kbd>→</kbd> 轉向</li>
           <li><kbd>T</kbd> 起飛　<kbd>L</kbd> 降落　<kbd>V</kbd> 影像</li>
-          <li><kbd>P</kbd> 拍照　<kbd>R</kbd> 錄影　<kbd>F</kbd> 全螢幕</li>
+          <li><kbd>P</kbd> 拍照　<kbd>R</kbd> 錄影　<kbd>F</kbd> 全螢幕　<kbd>M</kbd> 任務腳本</li>
           <li><kbd>Shift</kbd>＋<kbd>Esc</kbd> 緊急停槳</li>
           <li><kbd>?</kbd> 開關說明</li>
         </ul>
@@ -372,6 +388,20 @@
       <button class="btn btn-primary" value="ok">完成</button>
     </div>
   </form>
+</dialog>
+
+<!-- 任務腳本 -->
+<dialog id="dlgMission" class="dlg" aria-labelledby="msnDlgTitle">
+  <header class="dlg-head"><h2 id="msnDlgTitle"><svg class="mini"><use href="#i-list"/></svg>任務腳本</h2><button class="dlg-x" data-close aria-label="關閉">✕</button></header>
+  <p class="note">一行一個 Tello 指令，<code>#</code> 後面是註解。可用：<code>takeoff</code>、<code>land</code>、<code>up／down／left／right／forward／back 公分</code>（20–500）、<code>cw／ccw 度</code>、<code>go x y z speed</code>、<code>curve x1 y1 z1 x2 y2 z2 speed</code>、<code>flip l/r/f/b</code>、<code>speed 10–100</code>、<code>stop</code>、<code>wait 秒</code>。</p>
+  <textarea id="msnScript" rows="12" spellcheck="false" aria-label="任務腳本" placeholder="takeoff&#10;up 50&#10;forward 100&#10;cw 180&#10;forward 100&#10;land"></textarea>
+  <ul class="msn-errors" id="msnErrors" aria-live="polite"></ul>
+  <p class="note msn-safety"><svg class="mini warn"><use href="#i-warn"/></svg>執行中<b>推任何搖桿、按 B 降落、LB＋RB</b> 都會立刻中止（進行中的移動會送 <code>stop</code> 懸停）；任一步失敗就停下，不會接著做下一步。在地面上執行時第一行必須是 takeoff。</p>
+  <div class="dlg-actions">
+    <button type="button" class="btn" id="btnMissionExample">載入範例</button>
+    <button type="button" class="btn" data-close>關閉</button>
+    <button type="button" class="btn btn-primary" id="btnMissionRun"><svg><use href="#i-takeoff"/></svg>執行</button>
+  </div>
 </dialog>
 
 <!-- 接管控制確認 -->

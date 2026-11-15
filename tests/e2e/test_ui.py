@@ -367,6 +367,112 @@ def test_link_lost_red_frame(browser, stack):
     page.context.close()
 
 
+def test_flight_log_summary_and_csv(browser, stack):
+    """起飛 → 往前飛 → 降落：落地後面板出現本趟摘要、CSV 可下載、診斷頁列出這趟。"""
+    import csv as _csv
+    import io as _io
+    page, errors = open_page(browser)
+    page.wait_for_function("document.querySelector('#pfSummary').textContent.includes('全部通過')")
+    assert page.locator("#flightRow").is_hidden()
+    press(page, A)
+    wait_cmd(stack, "takeoff")
+    page.wait_for_function("window.__gcs.S.tel.flying === true", timeout=5000)
+    page.evaluate("window.__axes([0, 0, 0, -0.8])")        # 右搖桿往前
+    wait_rc(stack, (0, 46, 0, 0), timeout=3.0)
+    page.wait_for_timeout(800)
+    page.evaluate("window.__axes([0, 0, 0, 0])")
+    page.wait_for_function("window.__gcs.S.tel.flight_n === 1")
+    press(page, B)
+    wait_cmd(stack, "land")
+    page.wait_for_selector("#flightRow:not([hidden])", timeout=10000)
+    summary = page.locator("#flightSummary").inner_text()
+    assert "第 1 趟飛行" in summary and "最高" in summary and "最快" in summary, summary
+    page.wait_for_function("document.querySelector('#toasts').textContent.includes('飛行結束')")
+    assert page.locator("#flightCsv").get_attribute("href").endswith("flight=1")
+    # 下載這趟的 CSV：有 takeoff / land 指令、有送出的 rc
+    with page.expect_download() as dl:
+        page.evaluate("document.getElementById('flightCsv').click()")
+    path = dl.value.path()
+    rows = list(_csv.reader(_io.StringIO(open(path, encoding="utf-8").read())))
+    hdr = rows[0]
+    assert hdr[:4] == ["t", "wall", "flight", "flying"] and "cmd" in hdr and "rc_b" in hdr
+    cmds = [r[hdr.index("cmd")] for r in rows[1:]]
+    assert "takeoff" in cmds and "land" in cmds
+    assert any(r[hdr.index("rc_b")] == "46" for r in rows[1:])
+    assert all(r[hdr.index("flight")] in ("", "1") for r in rows[1:])
+    assert dl.value.suggested_filename.endswith("-flight1.csv")
+    # /api/flights 與診斷頁
+    import json as _json
+    j = _json.loads(urllib.request.urlopen(f"{URL}/api/flights", timeout=2).read())
+    assert len(j["flights"]) == 1 and j["flights"][0]["n"] == 1 and j["flights"][0]["bat_used"] is not None
+    page.goto(f"{URL}/diag")
+    page.wait_for_function("!document.querySelector('#tblFlights').hidden", timeout=8000)
+    assert "CSV" in page.locator("#tblFlights tbody").inner_text()
+    assert "1 趟" in page.locator("#cardFlights h2").get_attribute("data-status")
+    assert errors == []
+    page.context.close()
+
+
+# ---------------------------------------------------------------- 任務腳本
+def test_mission_script_runs_and_stick_aborts(browser, stack):
+    page, errors = open_page(browser)
+    page.wait_for_function("document.querySelector('#pfSummary').textContent.includes('全部通過')")
+    stack.mock.w.speed = 100.0
+    # M 開對話框：預載範例、格式檢查通過
+    page.keyboard.press("m")
+    page.wait_for_selector("#dlgMission[open]")
+    page.wait_for_function("document.querySelector('#msnErrors').textContent.includes('格式正確')")
+    assert "takeoff" in page.locator("#msnScript").input_value()
+    # 錯誤有行號、執行鈕停用
+    page.fill("#msnScript", "takeoff\nforward 10\nland")
+    page.wait_for_function("document.querySelector('#msnErrors').textContent.includes('第 2 行')")
+    assert page.locator("#btnMissionRun").is_disabled()
+    # 正確腳本 → 執行到完成（起飛、升 20、前進 30、轉 90、落地）
+    page.fill("#msnScript", "takeoff\nup 20\nforward 30\ncw 90\nwait 0.3\nland")
+    page.wait_for_function("!document.querySelector('#btnMissionRun').disabled")
+    page.click("#btnMissionRun")
+    page.wait_for_selector("#dlgMission", state="hidden")
+    page.wait_for_function("document.querySelector('#msnText').textContent.includes('執行中')")
+    page.wait_for_selector("#hudMission:not([hidden])")
+    wait_cmd(stack, "takeoff")
+    page.wait_for_function("document.querySelector('#msnText').textContent.includes('完成')", timeout=20000)
+    cmds = stack.mock.commands()
+    assert cmds.index("takeoff") < cmds.index("up 20") < cmds.index("forward 30") < cmds.index("cw 90") < cmds.index("land")
+    assert page.locator("#msnSteps li[data-status='ok']").count() == 6
+    page.wait_for_function("document.querySelector('#toasts').textContent.includes('任務完成')")
+    assert page.locator("#hudMission").is_hidden()
+    page.wait_for_function("window.__gcs.S.tel.flying === false", timeout=8000)
+    for _ in range(100):                                      # 模擬器要真的落地（馬達停）才能再起飛
+        if not stack.mock.w.flying:
+            break
+        time.sleep(0.05)
+    assert not stack.mock.w.flying
+    # 第二趟：長距離前進時推搖桿 → 中止、送 stop、剩下的步驟略過
+    stack.mock.w.speed = 20.0
+    before = len(stack.mock.commands())
+    page.evaluate("window.__gcs.openMission()")
+    page.fill("#msnScript", "takeoff\nforward 100\ncw 90\nland")
+    page.wait_for_function("!document.querySelector('#btnMissionRun').disabled")
+    page.click("#btnMissionRun")
+    try:
+        page.wait_for_function("document.querySelector('#msnText').textContent.includes('forward 100')", timeout=15000)
+    except Exception:
+        raise AssertionError(f"任務沒有走到 forward 100：面板={page.locator('#msnText').inner_text()!r} 錯誤={page.locator('#msnErrors').inner_text()!r} 指令={stack.mock.commands()[before:]}")
+    page.wait_for_timeout(500)
+    page.evaluate("window.__axes([0, 0, 0, -0.8])")          # 右搖桿往前 → 介入
+    page.wait_for_function("document.querySelector('#msnText').textContent.includes('已中止')", timeout=5000)
+    assert "搖桿介入" in page.locator("#msnText").inner_text()
+    page.evaluate("window.__axes([0, 0, 0, 0])")
+    tail = stack.mock.commands()[before:]
+    assert "stop" in tail and "cw 90" not in tail and "land" not in tail
+    assert page.locator("#msnSteps li[data-status='skipped']").count() == 3
+    assert page.evaluate("window.__gcs.S.tel.flying") is True       # 還在空中、由人接手
+    press(page, B)
+    wait_cmd(stack, "land")
+    assert errors == []
+    page.context.close()
+
+
 def test_diag_page(browser, stack):
     ctx = new_ctx(browser, viewport={"width": 1280, "height": 720}, color_scheme="dark")
     ctx.add_init_script(FAKE_PAD)

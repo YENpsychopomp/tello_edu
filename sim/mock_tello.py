@@ -61,6 +61,9 @@ class World:
     rc: tuple = (0, 0, 0, 0)
     below: float = 0.0            # 機身正下方有東西（例如手掌）比地面高出幾 cm → ToF 變短
     camera: int = 0               # 0 前鏡頭、1 下視鏡頭（downvision）
+    speed: float = 50.0           # speed 指令設定的移動速度（cm/s）；移動類指令用
+    auto: Optional[tuple] = None  # 移動類指令進行中：(vgx dm/s, vgy dm/s, yaw 速率 deg/s)，取代 rc
+    moving: Optional[str] = None  # 進行中的移動指令（stop 會中斷）
 
 
 class MockTello(asyncio.DatagramProtocol):
@@ -161,6 +164,7 @@ class MockTello(asyncio.DatagramProtocol):
         elif cmd == "emergency":
             w.motors = w.flying = False
             w.h, w.target_h = 0.0, None
+            w.moving = w.auto = None
             self.reply("ok", addr)
         elif cmd == "streamon":
             self._start_video(addr[0])
@@ -189,8 +193,90 @@ class MockTello(asyncio.DatagramProtocol):
                 self.reply("ok", addr)
         elif cmd == "sn?":
             self.reply("0TQZSIMULATOR", addr)
+        elif cmd == "stop":
+            if not w.flying:
+                self.reply("error", addr)
+            else:
+                w.moving = None
+                w.auto = None
+                self.reply("ok", addr)
+        elif cmd.startswith("speed "):
+            try:
+                sp = int(cmd.split()[1])
+            except (ValueError, IndexError):
+                self.reply("error", addr)
+            else:
+                if 10 <= sp <= 100:
+                    w.speed = float(sp)
+                    self.reply("ok", addr)
+                else:
+                    self.reply("error", addr)
+        elif cmd.split()[0] in ("up", "down", "left", "right", "forward", "back", "cw", "ccw", "go", "curve"):
+            await self._move(cmd, addr)
         else:
             self.reply("error", addr)
+
+    async def _move(self, cmd: str, addr: Any) -> None:
+        """移動類指令：依距離／速度花時間，期間 vgx/vgy/yaw 照方向變化，結束回 ok；stop 會中斷。"""
+        w = self.w
+        parts = cmd.split()
+        try:
+            nums = [int(v) for v in parts[1:]]
+        except ValueError:
+            self.reply("error", addr)
+            return
+        if not w.flying or w.moving is not None:
+            self.reply("error", addr)
+            return
+        name = parts[0]
+        sp = w.speed
+        if name in ("up", "down", "left", "right", "forward", "back"):
+            if len(nums) != 1 or not 20 <= nums[0] <= 500:
+                self.reply("error", addr)
+                return
+            d = nums[0]
+            dur = d / sp
+            dirs = {"forward": (sp / 10, 0, 0), "back": (-sp / 10, 0, 0), "right": (0, sp / 10, 0), "left": (0, -sp / 10, 0),
+                    "up": (0, 0, 0), "down": (0, 0, 0)}
+            auto = dirs[name]
+            if name in ("up", "down"):
+                w.target_h = max(0.0, w.h + (d if name == "up" else -d))
+                dur = d / 60.0
+        elif name in ("cw", "ccw"):
+            if len(nums) != 1 or not 1 <= nums[0] <= 360:
+                self.reply("error", addr)
+                return
+            dur = nums[0] / 90.0
+            auto = (0, 0, (90.0 if name == "cw" else -90.0))
+        elif name == "go":
+            if len(nums) != 4 or not 10 <= nums[3] <= 100 or max(abs(v) for v in nums[:3]) > 500:
+                self.reply("error", addr)
+                return
+            x, y, z, gsp = nums
+            dist = max(1.0, (x * x + y * y + z * z) ** 0.5)
+            dur = dist / gsp
+            auto = (x / dist * gsp / 10, y / dist * gsp / 10, 0)
+            w.target_h = max(0.0, w.h + z) if abs(z) >= 20 else None
+        else:  # curve
+            if len(nums) != 7 or not 10 <= nums[6] <= 60:
+                self.reply("error", addr)
+                return
+            x1, y1, z1, x2, y2, z2, csp = nums
+            dist = (x1 * x1 + y1 * y1 + z1 * z1) ** 0.5 + ((x2 - x1) ** 2 + (y2 - y1) ** 2 + (z2 - z1) ** 2) ** 0.5
+            dur = max(1.0, dist) / csp
+            auto = (x2 / max(1.0, dist) * csp / 10, y2 / max(1.0, dist) * csp / 10, 0)
+        w.moving = cmd
+        w.auto = auto
+        t_end = time.monotonic() + dur
+        while time.monotonic() < t_end:
+            await asyncio.sleep(0.05)
+            if w.moving != cmd or not w.flying:
+                break
+        interrupted = w.moving != cmd or not w.flying
+        if w.moving == cmd:
+            w.moving = None
+            w.auto = None
+        self.reply("error" if interrupted and not w.flying else "ok", addr)
 
     # ---------------------------------------------------------------- 物理 / 狀態
     async def _physics(self) -> None:
@@ -214,11 +300,17 @@ class MockTello(asyncio.DatagramProtocol):
                     else:
                         w.h += step if w.target_h > w.h else -step
                     w.vgz = 0
-                elif w.flying:
+                elif w.flying and w.auto is None:
                     w.h = max(0.0, min(3000.0, w.h + c * dt))
                     w.vgz = -c / 10
-                w.yaw = ((w.yaw + d * 0.9 * dt + 180) % 360) - 180
-                w.vgx, w.vgy = b / 10, a / 10
+                if w.auto is not None:
+                    # 移動類指令進行中：忽略 rc，照指令方向飛
+                    w.vgx, w.vgy = w.auto[0], w.auto[1]
+                    w.yaw = ((w.yaw + w.auto[2] * dt + 180) % 360) - 180
+                    a, b = int(w.vgy * 10), int(w.vgx * 10)
+                else:
+                    w.yaw = ((w.yaw + d * 0.9 * dt + 180) % 360) - 180
+                    w.vgx, w.vgy = b / 10, a / 10
                 w.pitch += (-b * 0.15 - w.pitch) * 0.2
                 w.roll += (a * 0.15 - w.roll) * 0.2
                 if w.flying and time.monotonic() - self.last_packet > self.o.no_cmd_land and w.target_h is None:

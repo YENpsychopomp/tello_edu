@@ -25,7 +25,7 @@ export class ControlSocket {
     ws.onmessage = (ev) => {
       let m;
       try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.t === 'res' && this.pending.has(m.id)) {
+      if (m.id != null && this.pending.has(m.id) && (m.t === 'res' || m.t === 'mission_check' || m.t === 'mission_res')) {
         const p = this.pending.get(m.id);
         this.pending.delete(m.id);
         clearTimeout(p.timer);
@@ -56,6 +56,22 @@ export class ControlSocket {
   send(obj) {
     if (!this.open) return false;
     try { this.ws.send(JSON.stringify(obj)); return true; } catch (e) { return false; }
+  }
+
+  /** 任意帶 id 的請求（任務腳本的 check / start / abort）；斷線或逾時回 { ok: false, errors: [...] , local: true }。 */
+  request(obj, timeoutMs = 5000) {
+    const id = this.nextId++;
+    return new Promise((resolve) => {
+      if (!this.send({ ...obj, id })) {
+        resolve({ t: 'mission_res', id, ok: false, errors: ['本機程式未連線'], local: true });
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        resolve({ t: 'mission_res', id, ok: false, errors: ['地面站程式沒有回應'], local: true });
+      }, timeoutMs);
+      this.pending.set(id, { resolve, timer, cmd: obj.t });
+    });
   }
 
   cmd(cmd, timeoutMs = 16000) {

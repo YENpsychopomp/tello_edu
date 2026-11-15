@@ -18,9 +18,10 @@ from typing import Any, Callable, Optional
 from . import config
 from .config import Settings
 from .diag import Diag
+from .flightlog import FlightLog
 from .protocol import (ASK_CMDS, FLIP_CMDS, FLIP_MIN_BATTERY, IMMEDIATE_CMDS, RC_ZERO,
-                       BatteryEstimator, clamp_rc, classify, normalize_cmd, parse_state,
-                       parse_wifi, rc_command)
+                       BatteryEstimator, ask_timeout, clamp_rc, classify, is_move, normalize_cmd,
+                       parse_state, parse_wifi, rc_command)
 from .safety import Safety
 
 log = logging.getLogger("gcs.link")
@@ -43,6 +44,7 @@ class _Proto(asyncio.DatagramProtocol):
 class TelloLink:
     def __init__(self, settings: Settings, diag: Optional[Diag] = None,
                  on_event: Optional[EventCb] = None, safety: Optional[Safety] = None,
+                 flightlog: Optional[FlightLog] = None,
                  clock: Callable[[], float] = time.monotonic,
                  state_stale: float = config.STATE_STALE, rc_hz: int = config.RC_HZ,
                  wifi_poll: float = config.WIFI_POLL, wifi_first: float = 1.0):
@@ -50,6 +52,7 @@ class TelloLink:
         self.diag = diag or Diag()
         self.on_event = on_event or (lambda *a: None)
         self.safety = safety or Safety()
+        self.flightlog = flightlog or FlightLog(clock=clock)
         self.clock = clock
         self.state_stale = state_stale
         self.rc_period = 1.0 / rc_hz
@@ -173,6 +176,7 @@ class TelloLink:
         self.diag.state_source = f"{addr[0]}:{addr[1]}" if addr else None
         bat = st.get("bat")
         self.battery.update(now, bat if isinstance(bat, int) else None, self.flying())
+        self.flightlog.sample(st, self.rc_sent, self.flying(), now)
         if self.sdk_ok and not self._was_connected:
             self._was_connected = True
             log.info("已連上 Tello（SDK 模式，狀態封包正常）")
@@ -225,6 +229,7 @@ class TelloLink:
                 self.asking_cmd = None
         self.diag.record_rtt(cmd, resp, rtt)
         if not quiet:
+            self.flightlog.command(cmd, resp)
             self.last = f"{cmd} → {resp}"
             log.info(self.last)
         return resp
@@ -233,17 +238,27 @@ class TelloLink:
         """land / emergency：不排隊、不等回應。進行中的 ask 立即回傳 interrupted。"""
         self.send(cmd)
         self.airborne = False
+        self.flightlog.command(cmd, "sent")
         if self.asking:
             self._interrupt.set()
         self.last = f"{cmd} → 已送出"
         log.warning(self.last)
+
+    def cancel_move(self) -> None:
+        """任務中止：進行中的移動指令立刻回 interrupted，並送 stop 讓 Tello 懸停（rc 迴圈隨後接手）。"""
+        if self.asking and self.asking_cmd and is_move(self.asking_cmd) and self.asking_cmd != "stop":
+            if self.flying():
+                self.send("stop")
+                self.flightlog.command("stop", "sent")
+            self._interrupt.set()
 
     async def command(self, raw: object) -> str:
         cmd = normalize_cmd(raw)
         if cmd in IMMEDIATE_CMDS:
             self.immediate(cmd)
             return "sent"
-        if cmd not in ASK_CMDS:
+        timeout = ask_timeout(cmd)
+        if timeout is None:
             return "denied"
         if cmd == "takeoff":
             if not self.connected():
@@ -263,7 +278,9 @@ class TelloLink:
                 return f"denied 電量低於 {FLIP_MIN_BATTERY}%"
             if not self.flying():
                 return "denied 不在空中"
-        resp = await self.ask(cmd, ASK_CMDS[cmd])
+        if is_move(cmd) and not self.flying():
+            return "denied 不在空中"
+        resp = await self.ask(cmd, timeout)
         if cmd == "wifi?":
             self.wifi = parse_wifi(resp)
         return resp
@@ -330,6 +347,7 @@ class TelloLink:
                     n = self.safety.land_tries
                     self.send("land")
                     self.airborne = False
+                    self.flightlog.command("land", f"auto-land {n}")
                     self.last = f"控制端斷訊 → 自動降落（第 {n} 次）"
                     log.warning(self.last)
                     self.on_event("danger", "auto_land", self.last)
@@ -377,4 +395,5 @@ class TelloLink:
             "safety": self.safety.status(now, self.rc_time, self._control_lost),
             "rc_sent": list(self.rc_sent),
             "last": self.last,
+            "flight_n": self.flightlog.current.n if self.flightlog.current else None,
         }

@@ -251,3 +251,39 @@ function renderPad(add) {
 // 手把數值要即時更新
 (function loop() { if (H.d || !H.fetchOk) renderPadOnly(); requestAnimationFrame(loop); })();
 function renderPadOnly() { renderPad(() => {}); }
+
+// ---------- 飛行紀錄（黑盒子）
+const fmtDur = (s) => { const m = Math.floor(s / 60), r = Math.round(s % 60); return m ? `${m} 分 ${String(r).padStart(2, '0')} 秒` : `${r} 秒`; };
+const fmtClock = (w) => new Date(w * 1000).toLocaleTimeString('zh-TW', { hour12: false });
+async function pollFlights() {
+  let j;
+  try {
+    const r = await fetch('/api/flights', { cache: 'no-store' });
+    j = await r.json();
+  } catch (e) {
+    card('cardFlights', 'danger', '無法讀取');
+    return;
+  }
+  const rows = [...j.flights, ...(j.current ? [j.current] : [])];
+  const level = j.current ? 'ok' : rows.length ? 'none' : 'none';
+  card('cardFlights', level, j.current ? `第 ${j.current.n} 趟飛行中` : rows.length ? `${rows.length} 趟` : '尚無飛行');
+  $('flightsNote').textContent = `緩衝 ${j.samples} 筆遙測（約 ${Math.round(j.samples / 10)} 秒）、${j.cmds} 個指令、${j.events} 個事件；程式啟動 ${fmtClock(j.since_wall)}。落地後每一趟都可以單獨下載。`;
+  const tb = $('tblFlights').querySelector('tbody');
+  $('tblFlights').hidden = !rows.length;
+  tb.replaceChildren(...rows.map((f) => {
+    const tr = document.createElement('tr');
+    if (!f.done) tr.className = 'current';
+    const cells = [String(f.n), fmtClock(f.wall0), fmtDur(f.duration_s) + (f.done ? '' : '（飛行中）'),
+      `${(f.max_h / 100).toFixed(1)} m`, `${f.max_speed.toFixed(1)} m/s`,
+      f.bat_used == null ? '--' : `${f.bat_used}%（${f.bat0}→${f.bat1}）`, `${f.distance} m`, (f.cmds || []).join(' · ') || '--'];
+    cells.forEach((c, i) => { const td = document.createElement('td'); td.textContent = c; if (i === 7) td.className = 'cmds'; tr.append(td); });
+    const td = document.createElement('td');
+    const a = document.createElement('a'); a.className = 'dg-link'; a.href = `/api/flightlog.csv?flight=${f.n}`; a.textContent = 'CSV';
+    const b = document.createElement('a'); b.className = 'dg-link'; b.href = `/api/flightlog.json?flight=${f.n}`; b.textContent = 'JSON';
+    td.append(a, document.createTextNode(' · '), b);
+    tr.append(td);
+    return tr;
+  }));
+}
+setInterval(pollFlights, 2000);
+pollFlights();

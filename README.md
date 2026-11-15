@@ -177,6 +177,7 @@ python -m venv .venv
 | T | 起飛（同樣需要通過飛前檢查） |
 | L | 降落 |
 | V／P／R／F | 影像／拍照／錄影／全螢幕 |
+| M | 任務腳本 |
 | **Shift＋Esc** | 緊急停槳 |
 | ? | 按鍵說明 |
 
@@ -184,6 +185,40 @@ python -m venv .venv
 
 - **緊急停槳要長按 1 秒**，按鈕上會顯示進度環；放開就取消。
 - 拍照：把 canvas 存成 PNG 下載。錄影：MediaRecorder 存成 WebM（HUD 不會錄進去）。
+
+### 飛行紀錄（黑盒子）
+
+地面站程式會把**每一筆狀態封包**（10 Hz）、當時送給 Tello 的 rc、每個指令與回應、所有事件都留在記憶體裡（最近 1 小時）。
+起飛→落地自動切成一趟「飛行」，落地後：
+
+- toast 與右側「事件紀錄」上方顯示摘要：「第 N 趟飛行 2 分 10 秒、最高 1.3 m、最快 1.2 m/s、用電 12%（87% → 75%）、約 40 m 里程」，旁邊的 **CSV** 下載這一趟（前後各多 3 秒）
+- 「下載完整飛行紀錄（CSV）」：緩衝區裡全部的資料
+- `/diag` 的「飛行紀錄」卡片列出每一趟，各有 CSV／JSON 連結；API：`/api/flights`、`/api/flightlog.csv?flight=N`、`/api/flightlog.json?flight=N`
+
+CSV 欄位：`t`（單調時鐘秒）、`wall`（epoch）、`flight`、`flying`、狀態封包全部欄位（`bat h tof pitch roll yaw vgx vgy vgz templ temph baro time mid x y z`）、`rc_a`–`rc_d`、`cmd`／`resp`（指令掛在送出後的第一筆遙測上）。
+真機測試時遇到奇怪的行為（ToF 跳動、跟隨擺盪、停到手上找不到手），把那趟的 CSV 留下來就能對照。速度欄位照 SDK 文件當 dm/s 換算，真機請用紀錄確認。
+
+### 任務腳本（M）
+
+左側「任務腳本」面板或按 **M**：一行一個 Tello SDK 指令，逐步執行，面板與 HUD 顯示進度。
+
+```
+takeoff
+up 50
+forward 100      # 公分 20–500
+cw 90            # 度 1–360
+wait 2           # 原地停 2 秒（本機計時）
+go 50 0 0 30     # x y z（公分 -500–500）speed 10–100
+flip l
+land
+```
+
+- 可用：`takeoff`、`land`、`up/down/left/right/forward/back`、`cw/ccw`、`go`、`curve`、`flip l/r/f/b`、`speed`、`stop`、`wait`；`#` 後面是註解。每一行都經過範圍檢查，錯誤會標行號，有錯就不能執行；最多 60 步。
+- 在地面上執行時第一行必須是 `takeoff`；已在空中就不能有 `takeoff`。電量 < 20% 不執行。
+- **中止**：推任何搖桿、按 B 降落、LB＋RB、面板的「中止」、機長分頁斷線或被接管。進行中的移動指令會送 `stop` 讓無人機懸停，之後由搖桿接手；剩下的步驟標成「略過」。
+- **任一步失敗（error／逾時）就停下**，不會接著做下一步——後面的步驗很可能是以前一步成功為前提寫的。
+- 腳本存在瀏覽器的 localStorage；開跟隨模式時執行任務會先關閉跟隨。
+- 後端：`gcs/mission.py`；移動指令的逾時依距離估算（5 秒＋距離÷15 cm/s，最多 40 秒），真機速度不同的話在 `gcs/protocol.py` 的 `move_info` 調整。
 
 ### 飛前檢查（全部通過才允許起飛）
 
@@ -425,6 +460,7 @@ Docker Desktop（Windows／macOS）的 UDP 是由**使用者空間的程序**轉
 - 瀏覽器能力（secure context、Gamepad、WebCodecs、H.264 解碼、MediaRecorder）
 - 手把 id、mapping、原始 axes 與 buttons
 - 啟動檢查結果
+- 飛行紀錄：每一趟的時間、最高、最快、用電、里程、送過的指令，各有 CSV／JSON 下載
 
 任何一項異常都會在最上方列出**具體的排除建議**，例如「有指令回應、但收不到狀態封包 → 多半是防火牆擋了入站 UDP 8890」。
 
@@ -572,14 +608,16 @@ scripts/allow-firewall.ps1  Windows 防火牆規則（只開放 Tello 子網路�
 gcs/                      後端
   __main__.py             進入點、啟動檢查、訊號處理（收到結束訊號立即 land）
   config.py               所有參數與環境變數
-  protocol.py             白名單、rc 夾限、狀態解析、回應分類、起飛失敗推測、電量估算
+  protocol.py             白名單（含移動指令的樣式與範圍檢查）、rc 夾限、狀態解析、回應分類、起飛失敗推測、電量估算
   link.py                 TelloLink：UDP 收發、ask／immediate、SDK 保活與重連、rc 迴圈
   safety.py               斷訊懸停／自動降落狀態機（純邏輯）
   h264.py                 分片重組：封包 → NAL → access unit，SPS/PPS 快取與補齊、codec string
   video.py                UDP 11111 接收、/ws/video 扇出（塞車時丟到下一個 IDR）、ffmpeg MJPEG 備援
   diag.py                 診斷計數器
+  flightlog.py            飛行紀錄（黑盒子）：環形緩衝、起降切趟、摘要、CSV／JSON 匯出
+  mission.py              任務腳本：解析與範圍檢查、逐步執行、中止（stop）、失敗即停
   preflight.py            啟動檢查
-  server.py               FastAPI：WebSocket（Origin 檢查、單一機長）、API、靜態檔
+  server.py               FastAPI：WebSocket（Origin 檢查、單一機長）、API（/api/diag、/api/flights、/api/flightlog.*）、靜態檔
 web/                      前端（無 build step，原生 ES modules）
   index.html  diag.html
   js/follow/              跟隨模式：pose.js（MediaPipe）、geometry.js（框與距離估計）、tracker.js（多人編號）、
@@ -596,10 +634,10 @@ sim/
   mock_tello.py           模擬 Tello
   dev.py                  原生模式一鍵模擬（模擬器＋地面站）
 tests/
-  unit/                   協定、rc 夾限、安全時序、H.264 重組、link、Origin／機長、色彩對比
+  unit/                   協定、rc 夾限、安全時序、H.264 重組、link、Origin／機長、飛行紀錄、任務腳本、色彩對比
   js/                     跟隨模式純邏輯（node --test）：距離估計、多人追蹤、手勢、控制器
   integration/test_sim.py 真的啟動 gcs ＋模擬器，走完整條控制鏈
-  e2e/test_ui.py          Playwright：假手把注入、按鍵、搖桿數值、截圖
+  e2e/test_ui.py          Playwright：假手把注入、按鍵、搖桿數值、飛行紀錄下載、任務腳本（執行、搖桿中止）、截圖
   e2e/test_follow.py      跟隨模式：模擬器閉迴路（轉向、手勢、介入、換目標、遺失、手臂可見高度、停到手上：下視校準／只用 ToF／取消、C 鍵下視測試）＋真模型
   e2e/screenshots/        1280×720、1920×1080 等截圖
 ```
@@ -616,7 +654,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-- `tests/unit`：rc 夾限、白名單、狀態封包解析、電量估算、斷訊懸停／自動降落時序（假時鐘）、ask 期間暫停 rc、land 打斷 ask、重連、結束時降落、H.264 分片重組（含真實 x264 串流）、Origin 檢查、單一機長、WCAG 對比。
+- `tests/unit`：rc 夾限、白名單、狀態封包解析、電量估算、斷訊懸停／自動降落時序（假時鐘）、ask 期間暫停 rc、land 打斷 ask、重連、結束時降落、H.264 分片重組（含真實 x264 串流）、Origin 檢查、單一機長、飛行紀錄（切趟、摘要、CSV／JSON、API）、任務腳本（解析、範圍、執行、搖桿／降落中止、失敗即停）、WCAG 對比。
 - `tests/integration`：子行程啟動 `python -m gcs` ＋模擬器，驗證起飛、影像（WebCodecs 與 MJPEG）、斷線 8 秒自動降落（實際時序）、Ctrl+Break 結束時降落。
 - `tests/js`：跟隨模式的純邏輯，用 Node 內建的 `node --test`（`tests/unit/test_js.py` 會自動呼叫；沒裝 Node 就跳過）。
 - `tests/e2e/test_follow.py`：用合成的人取代偵測模型、在模擬器上跑完整閉迴路；另外在 Edge 載入真的 MediaPipe 模型偵測一張真人照片（MediaPipe 官方範例圖，第一次執行時下載到 `.pytest_cache`，離線就跳過）。

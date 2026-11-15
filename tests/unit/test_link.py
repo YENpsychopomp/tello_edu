@@ -62,7 +62,7 @@ def test_connects_and_parses_state():
 def test_whitelist_blocks_unknown_commands():
     async def go():
         mock, link, _ = await setup()
-        for bad in ("reboot", "motoron", "go 100 0 0 50", "wifi ssid pw", "command"):
+        for bad in ("reboot", "motoron", "go 10 0 0 50", "wifi ssid pw", "command"):
             assert await link.command(bad) == "denied"
         await asyncio.sleep(0.1)
         assert mock.commands() == ["command"]

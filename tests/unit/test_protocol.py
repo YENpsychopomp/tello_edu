@@ -36,10 +36,10 @@ def test_rc_command_format():
 # ---------------------------------------------------------------- 白名單
 def test_whitelist():
     for c in ("takeoff", "land", "emergency", "streamon", "streamoff", "flip f", "wifi?", "battery?",
-              "downvision 0", "downvision 1"):
+              "downvision 0", "downvision 1", "go 100 0 0 50", "speed 100", "forward 20", "stop"):
         assert is_allowed(c)
-    for c in ("reboot", "motoron", "go 100 0 0 50", "rc 0 0 0 0", "command", "", "land; emergency",
-              "ap ssid pass", "wifi ssid pass", "speed 100", "downvision 2", "downvision"):
+    for c in ("reboot", "motoron", "go 10 0 0 50", "rc 0 0 0 0", "command", "", "land; emergency",
+              "ap ssid pass", "wifi ssid pass", "speed 101", "downvision 2", "downvision", "forward 10"):
         assert not is_allowed(c)
     assert IMMEDIATE_CMDS == {"land", "emergency"}
     assert not (set(ASK_CMDS) & IMMEDIATE_CMDS)
@@ -77,6 +77,13 @@ def test_parse_wifi():
     assert parse_wifi("timeout") is None
     assert parse_wifi("error") is None
     assert parse_wifi("") is None
+
+
+def test_classify_denied_with_reason():
+    # link.command 回「denied 原因」時也要算拒絕（之前會被當成 ok）
+    assert classify("denied 不在空中") == "denied"
+    assert classify("denied 電量低於 50%") == "denied"
+    assert classify("denied") == "denied"
 
 
 def test_classify():

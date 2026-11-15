@@ -376,3 +376,36 @@ input[type="checkbox"] { accent-color: var(--accent); width: 18px; height: 18px;
 .follow-on #pfList li[data-level="ok"] { display: none; }
 .follow-on #pfList:not(:has(li[data-level="danger"])) { display: none; }
 .follow-on .pf-summary { margin-top: 0; }
+
+/* 飛行紀錄（黑盒子）：落地後的摘要與下載 */
+.flight-row { display: flex; gap: 6px; align-items: flex-start; font-size: var(--fs-sm); padding: 6px 8px; margin-bottom: 8px; border-radius: var(--r-sm); background: var(--ok-bg); color: var(--text); }
+.flight-row svg { width: 16px; height: 16px; flex: none; color: var(--ok); margin-top: 1px; }
+.flight-row span { flex: 1; }
+.mini-link { color: var(--accent); font-size: var(--fs-xs); text-decoration: none; font-weight: 600; white-space: nowrap; }
+.mini-link:hover, .mini-link:focus-visible { text-decoration: underline; }
+.log-dl { display: block; margin-top: 8px; text-align: right; }
+
+/* 任務腳本 */
+.msn-btns { display: flex; gap: 8px; }
+.msn-btns .btn kbd { margin-left: 4px; }
+.msn-steps { list-style: none; margin: 4px 0 0; padding: 0; font-size: var(--fs-xs); max-height: 150px; overflow-y: auto; scrollbar-width: thin; font-family: ui-monospace, Consolas, monospace; }
+.msn-steps li { display: grid; grid-template-columns: 16px 1fr auto; gap: 0 6px; padding: 2px 0; color: var(--text-2); }
+.msn-steps li::before { content: '·'; text-align: center; color: var(--text-3); }
+.msn-steps li[data-status="running"] { color: var(--accent); font-weight: 700; }
+.msn-steps li[data-status="running"]::before { content: '▶'; color: var(--accent); }
+.msn-steps li[data-status="ok"] { color: var(--text-3); }
+.msn-steps li[data-status="ok"]::before { content: '✓'; color: var(--ok); }
+.msn-steps li[data-status="error"] { color: var(--danger); }
+.msn-steps li[data-status="error"]::before { content: '✕'; color: var(--danger); }
+.msn-steps li[data-status="skipped"]::before { content: '–'; }
+.msn-steps li small { color: var(--text-3); }
+#msnScript { width: 100%; box-sizing: border-box; min-height: 200px; resize: vertical; background: var(--surface-3); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-sm); padding: 10px; font: 14px/1.5 ui-monospace, Consolas, monospace; margin: 10px 0 6px; }
+#msnScript:focus-visible { outline: 2px solid var(--accent); }
+.msn-errors { list-style: none; margin: 0; padding: 0; font-size: var(--fs-sm); color: var(--danger); display: flex; flex-direction: column; gap: 2px; min-height: 20px; }
+.msn-errors li::before { content: '✕ '; }
+.msn-errors.ok { color: var(--ok); }
+.msn-errors.ok li::before { content: '✓ '; }
+.msn-safety { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; }
+.msn-safety .mini { flex: none; width: 18px; height: 18px; margin-top: 2px; }
+.dlg code { background: var(--surface-3); padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
+.hud-mission { bottom: 60px; font-size: var(--fs-md); font-weight: 600; }

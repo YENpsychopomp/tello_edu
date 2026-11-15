@@ -25,7 +25,7 @@ const S = {
   rc: [0, 0, 0, 0], speed: 'normal', src: '無', pad: { connected: false, id: '', mapping: '', held: () => false },
   centered: true, padId: '', videoOn: false, pf: null,
   batLevel: 'none', tempLevel: 'none', linkAlarm: false, lastDangerBuzz: 0, hiddenAt: 0,
-  config: { flip_min_battery: 50 },
+  config: { flip_min_battery: 50 }, mission: null, missionExample: '',
 };
 
 // =============================================================== 連線
@@ -40,6 +40,9 @@ const sock = new ControlSocket('/ws/control', {
       case 'hello':
         S.role = m.role; S.sim = !!m.sim; S.config = m.config || S.config;
         (m.events || []).forEach((e) => addLog(e.level, e.msg, e.ts, true));
+        { const fd = (m.events || []).filter((e) => e.code === 'flight_done').pop(); if (fd) onFlightDone(fd, true); }
+        S.missionExample = m.mission_example || S.missionExample;
+        if (m.mission) { S.mission = m.mission; renderMission(); }
         if (m.role === 'observer') toast('warn', '觀看模式', '另一個分頁正在控制。需要的話按「接管控制」。');
         break;
       case 'tel':
@@ -52,6 +55,14 @@ const sock = new ControlSocket('/ws/control', {
         else if (m.code === 'link_lost') buzz('danger');
         else if (m.code === 'link_ok') toast('ok', 'Tello 已連線', m.msg);
         else if (m.code === 'pilot_lost' && S.role !== 'pilot') toast('warn', '機長離線', m.msg);
+        else if (m.code === 'flight_done') onFlightDone(m);
+        else if (m.code === 'mission_done') { toast('ok', '任務完成', m.msg); buzz('tap'); }
+        else if (m.code === 'mission_aborted') { toast('warn', '任務已中止', m.msg); buzz('warn'); }
+        else if (m.code === 'mission_error') { toast('danger', '任務失敗，已停下', m.msg); buzz('warn'); }
+        break;
+      case 'mission':
+        S.mission = m;
+        renderMission();
         break;
       case 'role':
         S.role = m.role;
@@ -145,6 +156,7 @@ function act(name, arg) {
       if (!requirePilot()) return;
       follow.toggleDownCam();
       return;
+    case 'mission': openMission(); return;
     default:
   }
 }
@@ -526,6 +538,108 @@ function renderLinkAlarm(t, wsOpen) {
   }
 }
 
+// =============================================================== 任務腳本
+const MISSION_KEY = 'tello.mission';
+let msnCheckTimer = 0;
+function loadMissionScript() { try { return localStorage.getItem(MISSION_KEY) || ''; } catch (e) { return ''; } }
+function saveMissionScript(s) { try { localStorage.setItem(MISSION_KEY, s); } catch (e) { /* 無法儲存就算了 */ } }
+
+function openMission() {
+  const ta = $('msnScript');
+  if (!ta.value) ta.value = loadMissionScript() || S.missionExample;
+  checkMission();
+  openDialog($('dlgMission'));
+  ta.focus();
+}
+
+function showMissionErrors(errors, okText) {
+  const ul = $('msnErrors');
+  ul.classList.toggle('ok', !errors.length && !!okText);
+  ul.replaceChildren(...(errors.length ? errors : okText ? [okText] : []).map((t) => Object.assign(document.createElement('li'), { textContent: t })));
+}
+
+async function checkMission() {
+  const script = $('msnScript').value;
+  saveMissionScript(script);
+  const r = await sock.request({ t: 'mission', op: 'check', script });
+  if (r.t === 'mission_check') {
+    showMissionErrors(r.errors || [], r.ok ? `${r.steps.length} 步，格式正確` : '');
+    $('btnMissionRun').disabled = !r.ok;
+  }
+}
+
+async function runMission() {
+  if (!requirePilot()) return;
+  const script = $('msnScript').value;
+  saveMissionScript(script);
+  if (follow.enabled) follow.disable('任務腳本開始，已關閉跟隨模式');
+  const r = await sock.request({ t: 'mission', op: 'start', script });
+  if (!r.ok) { showMissionErrors(r.errors || ['無法開始'], ''); buzz('warn'); return; }
+  $('dlgMission').close();
+  toast('ok', '任務開始', '推任何搖桿即可中止');
+  buzz('tap');
+}
+
+async function abortMission(reason) {
+  const r = await sock.request({ t: 'mission', op: 'abort', reason: reason || '按下中止' });
+  if (!r.ok) toast('warn', '沒有正在執行的任務', (r.errors || []).join('；'));
+}
+
+function renderMission() {
+  const ms = S.mission;
+  const line = $('msnLine'), text = $('msnText');
+  const hud = $('hudMission');
+  const running = !!ms && ms.state === 'running';
+  $('btnMissionAbort').hidden = !running;
+  $('btnMission').disabled = running;
+  $('msnSteps').hidden = !ms || !ms.steps || !ms.steps.length;
+  if (!ms || ms.state === 'idle') {
+    line.dataset.level = 'none'; text.textContent = '沒有任務'; hud.hidden = true;
+    line.querySelector('use').setAttribute('href', '#i-info');
+    return;
+  }
+  const cur = running && ms.steps[ms.idx] ? ms.steps[ms.idx] : null;
+  const lv = { running: 'ok', done: 'ok', aborted: 'warn', error: 'danger' }[ms.state] || 'none';
+  line.dataset.level = lv;
+  line.querySelector('use').setAttribute('href', `#${ICON[lv] || ICON.none}`);
+  text.textContent = running ? `執行中 ${ms.idx + 1}/${ms.total}：${cur ? cur.cmd : ''}`
+    : ms.state === 'done' ? `完成（${ms.total} 步，${ms.elapsed_s ?? '--'} 秒）`
+      : ms.state === 'aborted' ? `已中止：${ms.reason}` : `失敗：${ms.reason}`;
+  const ol = $('msnSteps');
+  const key = ms.steps.map((s) => `${s.status}:${s.cmd}`).join('|');
+  if (ol.dataset.key !== key) {
+    ol.dataset.key = key;
+    ol.replaceChildren(...ms.steps.map((s) => {
+      const li = document.createElement('li');
+      li.dataset.status = s.status;
+      const b = document.createElement('span'); b.textContent = s.cmd;
+      const sm = document.createElement('small'); sm.textContent = s.status === 'error' ? (s.resp || '失敗') : s.ms != null && s.status === 'ok' ? `${(s.ms / 1000).toFixed(1)}s` : '';
+      li.append(b, sm);
+      return li;
+    }));
+    const r = ol.querySelector('[data-status="running"]');
+    if (r) r.scrollIntoView({ block: 'nearest' });
+  }
+  hud.hidden = !running;
+  if (running) { hud.dataset.level = 'ok'; hud.textContent = `任務 ${ms.idx + 1}/${ms.total}：${cur ? cur.cmd : ''}　推搖桿即中止`; }
+}
+
+$('btnMission').addEventListener('click', () => act('mission'));
+$('btnMissionAbort').addEventListener('click', () => abortMission('按下中止'));
+$('btnMissionRun').addEventListener('click', runMission);
+$('btnMissionExample').addEventListener('click', () => { $('msnScript').value = S.missionExample; checkMission(); });
+$('msnScript').addEventListener('input', () => { clearTimeout(msnCheckTimer); msnCheckTimer = setTimeout(checkMission, 250); });
+
+// =============================================================== 飛行紀錄（黑盒子）
+function onFlightDone(m, quiet) {
+  const f = m.flight;
+  if (!f) return;
+  $('flightRow').hidden = false;
+  $('flightSummary').textContent = m.msg;
+  $('flightCsv').href = `/api/flightlog.csv?flight=${f.n}`;
+  if (!quiet) toast('ok', '飛行結束', `${m.msg}。右側可下載這趟的紀錄（CSV）`, 9000);
+}
+
 // =============================================================== 事件紀錄
 function addLog(level, msg, ts, quiet) {
   const ol = $('eventLog');
@@ -652,5 +766,5 @@ if (!window.isSecureContext) {
 }
 
 // 給 E2E 測試讀取狀態（不影響功能）
-window.__gcs = { S, get settings() { return settings; }, sock, player, follow };
+window.__gcs = { S, get settings() { return settings; }, sock, player, follow, openMission, runMission };
 render();

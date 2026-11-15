@@ -16,6 +16,7 @@ ASK_CMDS: dict[str, float] = {
     "battery?": 3.0, "sdk?": 3.0, "sn?": 3.0, "wifi?": 3.0,
     # 切換影像來源：0 前鏡頭、1 下視鏡頭（SDK 3.0；舊韌體回 error／unknown command）
     "downvision 0": 3.0, "downvision 1": 3.0,
+    "stop": 5.0,            # 懸停（中斷進行中的移動）
 }
 # 不排隊、不等回應、立即送出（安全相關，不能被其他指令卡住）
 IMMEDIATE_CMDS = frozenset({"land", "emergency"})
@@ -29,8 +30,87 @@ def normalize_cmd(cmd: object) -> str:
     return " ".join(str(cmd or "").strip().lower().split())
 
 
+# ---- 任務腳本用的移動指令（樣式比對＋範圍檢查；逾時依距離估算）----
+_MOVE_RE = re.compile(r"^(up|down|left|right|forward|back) (\d{1,4})$")
+_TURN_RE = re.compile(r"^(cw|ccw) (\d{1,4})$")
+_GO_RE = re.compile(r"^go (-?\d{1,4}) (-?\d{1,4}) (-?\d{1,4}) (\d{1,3})$")
+_CURVE_RE = re.compile(r"^curve (-?\d{1,4}) (-?\d{1,4}) (-?\d{1,4}) (-?\d{1,4}) (-?\d{1,4}) (-?\d{1,4}) (\d{1,3})$")
+_SPEED_RE = re.compile(r"^speed (\d{1,3})$")
+MOVE_MIN, MOVE_MAX = 20, 500
+TURN_MIN, TURN_MAX = 1, 360
+GO_MAX = 500
+SPEED_MIN, SPEED_MAX, CURVE_SPEED_MAX = 10, 100, 60
+MOVE_TIMEOUT_MAX = 40.0
+
+
+def _move_timeout(dist_cm: float, speed_cm_s: float) -> float:
+    return min(MOVE_TIMEOUT_MAX, 5.0 + dist_cm / max(10.0, speed_cm_s))
+
+
+def move_info(cmd: str) -> Optional[dict]:
+    """移動類指令：回 {"error": None|訊息, "timeout": 秒, "flying_only": bool}；不是移動類指令回 None。"""
+    m = _MOVE_RE.match(cmd)
+    if m:
+        d = int(m.group(2))
+        err = None if MOVE_MIN <= d <= MOVE_MAX else f"{m.group(1)} 的距離要在 {MOVE_MIN}–{MOVE_MAX} 公分之間"
+        return {"error": err, "timeout": _move_timeout(d, 15.0), "flying_only": True}
+    m = _TURN_RE.match(cmd)
+    if m:
+        a = int(m.group(2))
+        err = None if TURN_MIN <= a <= TURN_MAX else f"{m.group(1)} 的角度要在 {TURN_MIN}–{TURN_MAX} 度之間"
+        return {"error": err, "timeout": min(MOVE_TIMEOUT_MAX, 5.0 + a / 40.0), "flying_only": True}
+    m = _GO_RE.match(cmd)
+    if m:
+        x, y, z, sp = (int(v) for v in m.groups())
+        err = None
+        if max(abs(x), abs(y), abs(z)) > GO_MAX:
+            err = f"go 的 x/y/z 要在 -{GO_MAX}–{GO_MAX} 公分之間"
+        elif max(abs(x), abs(y), abs(z)) < MOVE_MIN:
+            err = f"go 的 x/y/z 至少要有一個大於等於 {MOVE_MIN} 公分"
+        elif not SPEED_MIN <= sp <= SPEED_MAX:
+            err = f"go 的速度要在 {SPEED_MIN}–{SPEED_MAX} 之間"
+        dist = (x * x + y * y + z * z) ** 0.5
+        return {"error": err, "timeout": _move_timeout(dist, sp), "flying_only": True}
+    m = _CURVE_RE.match(cmd)
+    if m:
+        v = [int(t) for t in m.groups()]
+        p1, p2, sp = v[0:3], v[3:6], v[6]
+        err = None
+        if max(abs(t) for t in v[:6]) > GO_MAX:
+            err = f"curve 的座標要在 -{GO_MAX}–{GO_MAX} 公分之間"
+        elif max(abs(t) for t in p1) < MOVE_MIN or max(abs(t) for t in p2) < MOVE_MIN:
+            err = f"curve 的兩個點都至少要有一個座標大於等於 {MOVE_MIN} 公分"
+        elif not SPEED_MIN <= sp <= CURVE_SPEED_MAX:
+            err = f"curve 的速度要在 {SPEED_MIN}–{CURVE_SPEED_MAX} 之間"
+        d1 = sum(t * t for t in p1) ** 0.5
+        d2 = sum((a - b) ** 2 for a, b in zip(p2, p1)) ** 0.5
+        return {"error": err, "timeout": _move_timeout(d1 + d2, sp), "flying_only": True}
+    m = _SPEED_RE.match(cmd)
+    if m:
+        sp = int(m.group(1))
+        err = None if SPEED_MIN <= sp <= SPEED_MAX else f"speed 要在 {SPEED_MIN}–{SPEED_MAX} 之間"
+        return {"error": err, "timeout": 3.0, "flying_only": False}
+    return None
+
+
+def is_move(cmd: str) -> bool:
+    """會讓無人機移動的指令（只能在空中送）。"""
+    mi = move_info(cmd)
+    return (mi is not None and mi["flying_only"]) or cmd == "stop"
+
+
+def ask_timeout(cmd: str) -> Optional[float]:
+    """允許的「等回應」指令回逾時秒數；不允許（含範圍錯誤）回 None。"""
+    if cmd in ASK_CMDS:
+        return ASK_CMDS[cmd]
+    mi = move_info(cmd)
+    if mi is not None and mi["error"] is None:
+        return mi["timeout"]
+    return None
+
+
 def is_allowed(cmd: str) -> bool:
-    return cmd in ASK_CMDS or cmd in IMMEDIATE_CMDS
+    return cmd in IMMEDIATE_CMDS or ask_timeout(cmd) is not None
 
 
 def clamp_rc(vals: object) -> tuple[int, int, int, int]:
@@ -113,7 +193,7 @@ def classify(resp: str) -> str:
         return "interrupted"
     if r == "sent":
         return "sent"
-    if r in ("denied", "not allowed"):
+    if r.startswith("denied") or r == "not allowed":
         return "denied"
     if r.startswith("error") or r.startswith("unknown command") or r == "network error" or r == "false":
         return "error"
