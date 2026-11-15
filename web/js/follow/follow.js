@@ -2,7 +2,7 @@
 //
 // 手把／鍵盤介入：只要搖桿離開死區，rc 完全交給手動；放開 1 秒後自動恢復跟隨，
 // 並把「當下的高度與距離」當成新的設定值（介入就是調整構圖的方法）。
-import { applyGesture, armWindow, clampSetpoint, followRc, slew } from './control.js';
+import { OscillationGuard, applyGesture, armWindow, clampSetpoint, followRc, slew } from './control.js';
 import { TargetEstimator } from './estimator.js';
 import { Searcher } from './search.js';
 import { GESTURES, GestureLatch, classifyPose } from './gestures.js';
@@ -17,6 +17,8 @@ export const STALE_MS = 450;         // 量測多久沒更新就算「沒看到�
 export const LOST_MS = 1000;         // 看不到目標多久開始自動搜尋
 export const VIDEO_STALL_MS = 700;   // 影像多久沒有新畫面就算中斷 → 懸停、不算目標遺失
 export const STALL_GIVEUP_MS = 8000; // 影像中斷太久 → 通知（持續懸停，交給人）
+const STALL_COAST_MS = 1000;         // 影像中斷後維持原本的轉向指令多久（線性減到 0）
+const STALL_COAST_YAW = 30;
 const DETECT_MS = 80;                // 偵測間隔下限（約 12 Hz）；推論變慢時自動拉長，不讓偵測排隊
 const QUALITY_MIN = 0.55;            // 關鍵點平均可見度低於這個值的偵測當成花掉的畫面丟掉
 const DOWN_IGNORE_MS = 500;          // 剛切到下視鏡頭時，前鏡頭的舊畫面還在路上 → 先不偵測
@@ -104,6 +106,8 @@ export class FollowMode {
     this.detPeriod = DETECT_MS;         // 偵測間隔的移動平均（ms），用來縮放增益
     this.prevDetect = 0;
     this.giveUpAt = -Infinity;          // 上次搜尋放棄的時間（短時間內不再自動搜）
+    this.yawI = 0; this.distI = 0; this.lastMix = 0;    // 轉向／距離積分與上一拍時間
+    this.osc = new OscillationGuard();                  // 延遲太大造成的來回擺 → 自動降增益
     this.fakeStall = null;              // E2E：() => true 代表影像沒有新畫面
     this.latch = new GestureLatch();
     this.enabled = false;
@@ -247,6 +251,7 @@ export class FollowMode {
     } else if (!this.stalled && this.hasVideoOrFake() && this.lastFrameAt && now - this.lastFrameAt > VIDEO_STALL_MS) {
       this.stalled = true;
       this.stallSince = this.lastFrameAt;
+      this.stallYaw = this.rc[3];         // 凍結前的轉向指令：凍結的第一秒維持著逐漸減到 0，人在走動時畫面恢復後才還看得到他
     }
     if (this.stalled && !this.stallWarned && now - this.stallSince > STALL_GIVEUP_MS) {
       this.stallWarned = true;
@@ -511,11 +516,14 @@ export class FollowMode {
     const fresh = tgt && now - tgt.seen <= STALE_MS;
     const stalled = this.stalled && this.hasVideoOrFake();
 
-    // 影像中斷：懸停（不算目標遺失、不搜尋）。停到手上進行中也一樣先停
+    // 影像中斷：不平移、不升降（不算目標遺失、不搜尋）。第一秒維持凍結前的轉向指令並逐漸減到 0
+    //（穩定跟隨時畫面上的目標速度接近 0，真正在轉的是機身）。停到手上進行中也一樣先停
     if (stalled && !(this.palm.phase === 'landing')) {
       if (this.search.active) this._endSearch(false, null, '影像中斷');
       this.why = ['video-stall'];
-      this.rc = slew(this.rc, [0, 0, 0, 0]);
+      const k = this.palm.active ? 0 : Math.max(0, 1 - (now - this.stallSince) / STALL_COAST_MS);
+      const yaw = Math.round(Math.max(-STALL_COAST_YAW, Math.min(STALL_COAST_YAW, (this.stallYaw || 0) * k)));
+      this.rc = slew(this.rc, [0, 0, 0, yaw]);
       this._set(flying);
       return this.rc;
     }
@@ -595,16 +603,22 @@ export class FollowMode {
 
     let next = [0, 0, 0, 0];
     this.why = [];
+    if (!(tgt && est)) { this.yawI = 0; this.distI = 0; }
+    if (!tgt) this.osc.reset();
     if (tgt && est && !this.paused && this.spInit && this.hasVideoOrFake()) {
       // 用估計器的位置／速度（平滑、補延遲、缺幀時預測），其餘幾何資料用最後一次偵測的
-      const gain = Math.max(0.45, Math.min(1, (1000 / Math.max(50, this.detPeriod)) / 10));
+      const gain = Math.max(0.5, Math.min(1, (1000 / Math.max(50, this.detPeriod)) / 8)) * this.osc.factor;   // 8 fps 以下、或偵測到擺盪 → 縮增益
+      const dtI = this.lastMix ? (now - this.lastMix) / 1000 : 0;
       const r = followRc({ cx: est.cx, dist: est.dist, distMin: tgt.distMin, lms: tgt.lms, torso: tgt.torso, shoulder: tgt.shoulder },
-        this.sp, Number.isFinite(tel.h) ? tel.h : null, { vx: est.vx, gain });
+        this.sp, Number.isFinite(tel.h) ? tel.h : null, { vx: est.vx, vd: est.vd, gain, integ: this.yawI, integD: this.distI, dt: dtI });
+      this.yawI = r.integ; this.distI = r.integD;
+      this.osc.feed(r.raw[3], now);
       next = r.raw;
       this.why = r.why;
       if (est.predicted && now - tgt.seen > STALE_MS) this.why.push('predicted');
       this.hTarget = r.hTarget;
     }
+    this.lastMix = now;
     this.rc = slew(this.rc, next);
     this._set(flying);
     return this.rc;
@@ -653,6 +667,7 @@ export class FollowMode {
         error: this.handError, under: this.palm.under, travel: this.palm.travel },
       cam: this.cam, downHand: this.downHand,
       search: { active: this.search.active, stage: this.search.stage, rel: Math.round(this.search.rel), side: this.search.side },
+      oscFactor: +this.osc.factor.toFixed(2), oscTrips: this.osc.trips,
       stalled: this.stalled, detPeriod: Math.round(this.detPeriod), rejected: this.est.rejected,
       est: this.est.predict(performance.now()),
     };

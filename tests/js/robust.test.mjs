@@ -117,7 +117,7 @@ test('搜尋：reset 後不輸出；start 可重新開始', () => {
 // ------------------------------------------------------------------ tracker：搜尋中的找回條件、holdTarget
 import { Tracker } from '../../web/js/follow/tracker.js';
 import { describePerson } from '../../web/js/follow/geometry.js';
-import { followRc, LIMITS } from '../../web/js/follow/control.js';
+import { OscillationGuard, followRc, LIMITS } from '../../web/js/follow/control.js';
 import { ASPECT, person } from './synthetic.mjs';
 
 const det = (cx, t = 0.2, feat = null) => ({ ...describePerson(person({ cx, t }), ASPECT), feat });
@@ -166,10 +166,23 @@ test('控制器 PD：目標往右移動時提早轉（前饋）、機身轉向�
   const damp = followRc({ cx: 0.6, dist: 3, distMin: 3 }, sp, 150, { vx: -0.4 }).raw[3];
   assert.ok(ff > base && damp < base && damp > 0, `${damp} < ${base} < ${ff}`);
   assert.ok(Math.abs(followRc({ cx: 0.9, dist: 3, distMin: 3 }, sp, 150, { vx: 5 }).raw[3]) <= LIMITS.yaw);
-  const slow = followRc({ cx: 0.7, dist: 5, distMin: 5 }, sp, 150, { gain: 0.5 }).raw;
-  const fast = followRc({ cx: 0.7, dist: 5, distMin: 5 }, sp, 150).raw;
-  assert.ok(slow[3] < fast[3] && slow[1] < fast[1] && slow[1] > 0);
+  const slow = followRc({ cx: 0.7, dist: 3.7, distMin: 3.7 }, sp, 150, { gain: 0.5 }).raw;
+  const fast = followRc({ cx: 0.7, dist: 3.7, distMin: 3.7 }, sp, 150).raw;
+  assert.ok(slow[3] < fast[3] && slow[1] < fast[1] && slow[1] > fast[1] * 0.55);     // 前後只小幅縮
   // 死區內、沒有速度 → 不動；死區內但目標正在橫移 → 先微轉
   assert.equal(followRc({ cx: 0.51, dist: 3, distMin: 3 }, sp, 150).raw[3], 0);
   assert.ok(followRc({ cx: 0.51, dist: 3, distMin: 3 }, sp, 150, { vx: 0.3 }).raw[3] > 0);
+});
+
+test('擺盪偵測：3 秒內大幅換向 3 次 → 增益因子縮小；穩定後慢慢恢復；小幅抖動不算', () => {
+  const g = new OscillationGuard();
+  let t = 0;
+  for (const y of [40, -40, 40, -40]) { t += 300; g.feed(y, t); }
+  assert.ok(g.factor < 1 && g.trips === 1, `${g.factor}`);
+  const f1 = g.factor;
+  for (let i = 0; i < 100; i++) { t += 100; g.feed(5, t); }        // 10 秒穩定
+  assert.ok(g.factor > f1);
+  const h = new OscillationGuard();
+  for (const y of [15, -15, 15, -15, 15, -15]) { t += 200; h.feed(y, t); }
+  assert.equal(h.factor, 1);
 });

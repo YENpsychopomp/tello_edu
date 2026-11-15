@@ -10,10 +10,10 @@ export const EST = Object.freeze({
   alpha: 0.55, beta: 0.25,     // 位置／速度的修正係數（每次量測）
   gate: 0.12,                  // 離群門檻（影像寬度比例）：|量測 − 預測| 超過就先不採信
   gatePerSec: 0.45,            // 間隔越久，門檻放寬越多（1 m 外的人橫走 1.5 m/s ≈ 每秒 1 個畫面寬，但速度項會先跟上）
-  predictMs: 700,              // 沒有量測時最多往前推多久
+  predictMs: 900,              // 沒有量測時最多往前推多久
   latencyMs: 120,              // 影像延遲（畫面到控制的時間）
   decayPerSec: 0.35,           // 預測期間速度每秒衰減到幾成（避免越推越遠）
-  distAlpha: 0.4,
+  distAlpha: 0.3,
 });
 
 export class TargetEstimator {
@@ -29,12 +29,14 @@ export class TargetEstimator {
     this.outliers = 0;
     this.n = 0;
     this.rejected = 0;         // 累計被丟掉的量測（診斷用）
+    this.realign = false;      // 下一筆量測不做離群檢查、直接對齊（影像凍結恢復後）
+    this.distOutliers = 0;
   }
 
   get ready() { return this.t !== null; }
 
-  /** 偵測暫停了 ms（切鏡頭、影像凍結）：時間往後推，不要把暫停當成目標跑掉 */
-  shift(ms) { if (this.t !== null && ms > 0) this.t += ms; }
+  /** 偵測暫停了 ms（切鏡頭、影像凍結）：時間往後推，不要把暫停當成目標跑掉；恢復後第一筆直接相信（人可能已經移動） */
+  shift(ms) { if (this.t !== null && ms > 0) { this.t += ms; this.realign = true; } }
 
   /**
    * 新的量測。@param m {cx, cy, dist|null} @returns true＝採信，false＝視為離群值丟掉
@@ -50,15 +52,16 @@ export class TargetEstimator {
     const dt = Math.max(0.001, (now - this.t) / 1000);
     const px = this.cx + this.vx * dt, py = this.cy + this.vy * dt;
     const err = Math.hypot(m.cx - px, (m.cy - py) * 0.6);
-    if (dt < 1.5 && err > this.o.gate + this.o.gatePerSec * dt && this.outliers < 1 && this.n >= 3) {
+    if (!this.realign && dt < 1.5 && err > this.o.gate + this.o.gatePerSec * dt && this.outliers < 1 && this.n >= 3) {
       // 跳太遠：可能是花掉的畫面或認錯人。先不採信；下一幀還是這樣就相信它（真的跳了）
       this.outliers++;
       this.rejected++;
       return false;
     }
-    if (this.outliers || dt >= 1.5) {
-      // 連續兩次離群、或間隔太久：重新對齊位置，速度歸零
+    if (this.outliers || dt >= 1.5 || this.realign) {
+      // 連續兩次離群、間隔太久、或凍結剛恢復：重新對齊位置，速度歸零
       this.cx = m.cx; this.cy = m.cy; this.vx = this.vy = 0;
+      this.realign = false;
     } else {
       const a = this.o.alpha, b = this.o.beta;
       const rx = m.cx - px, ry = m.cy - py;
@@ -72,8 +75,17 @@ export class TargetEstimator {
       if (this.dist === null) { this.dist = m.dist; this.vd = 0; } else {
         const pd = this.dist + this.vd * dt;
         const rd = m.dist - pd;
-        this.dist = pd + this.o.distAlpha * rd;
-        this.vd = Math.max(-2, Math.min(2, this.vd + (0.15 * rd) / dt));
+        // 距離也要擋離群值：位置剛好對得上、距離卻差很多（花屏把軀幹切掉、認錯人）→ 先不採信，連續兩次才相信
+        if (Math.abs(rd) > Math.max(0.6, 0.35 * pd) + 0.8 * dt && this.distOutliers < 1 && !this.realign && dt < 1.5) {
+          this.distOutliers++;
+          this.rejected++;
+        } else {
+          if (this.distOutliers || dt >= 1.5) { this.dist = m.dist; this.vd = 0; } else {
+            this.dist = pd + this.o.distAlpha * rd;
+            this.vd = Math.max(-2, Math.min(2, this.vd + (0.15 * rd) / dt));
+          }
+          this.distOutliers = 0;
+        }
       }
     } else this.vd = 0;
     this.t = now;
@@ -97,6 +109,7 @@ export class TargetEstimator {
       cy: Math.max(-0.2, Math.min(1.2, this.cy + vy * horizon)),
       vx, vy,
       dist: this.dist === null ? null : Math.max(0.2, this.dist + this.vd * decay * horizon),
+      vd: this.dist === null ? 0 : this.vd * decay,
       age, predicted: age > 0,
     };
   }
