@@ -30,6 +30,13 @@ WIFI_POLL = 5.0         # 每隔多久查一次 wifi?
 AIRBORNE_HEIGHT = 20    # h 超過幾公分就視為在空中（即使旗標是 False）
 TELEMETRY_HZ = 10       # 推給瀏覽器的遙測頻率
 
+# ---- 飛行限制（可在介面的「設定」調整，由機長分頁送到後端）----
+CEILING_DEFAULT = 300       # 高度上限（cm）：到了就不再接受「上升」的 rc；0 = 關閉
+CEILING_MIN, CEILING_MAX = 50, 1000
+LOW_BAT_LAND_DEFAULT = 10   # 電量低於等於這個百分比而且在空中 → 自動降落；0 = 關閉
+LOW_BAT_LAND_MAX = 30
+LOW_BAT_RESEND = 5.0        # 自動降落後仍在空中，多久重送一次 land
+
 # ---- 電量估算 ----
 DEFAULT_FLIGHT_MIN = 13.0   # 滿電飛行時間（分鐘），沒有實測資料時使用
 BATTERY_RESERVE = 10        # 預估剩餘時間算到這個百分比為止

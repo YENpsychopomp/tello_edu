@@ -145,7 +145,7 @@ python -m venv .venv
 
 - **上方狀態列**（依重要性由左到右）：連線 → 電量（大字、進度條、預估剩餘飛行時間）→ 飛行時間 → Wi-Fi 訊號 → 溫度 → 速度模式
 - **中央**：4:3 影像，上面疊著 HUD（高度、ToF、水平／垂直速度、航向、人工地平線）
-- **左側**：飛前檢查、控制權；**右側**：姿態與鏈路、事件紀錄
+- **左側**：飛前檢查、控制權、跟隨模式、任務腳本；**右側**：姿態與鏈路、**航跡**（用速度與航向推算的北朝上小地圖：起點、路徑、機身方向、離起點多遠在哪個方向；起飛歸零，光流速度會漂，只當參考）、事件紀錄
 - **左下、右下**：兩支搖桿的即時位置（含死區圈）與送出的 rc 數值
 - **底部**：起飛、降落、影像、拍照、錄影、緊急停槳
 
@@ -164,7 +164,7 @@ python -m venv .venv
 | **LB ＋ RB** 同時按 | **緊急停槳：馬達立刻停止，無人機會直接掉下來** |
 | **View** | 開關按鍵說明 |
 
-搖桿死區預設 0.12（死區外重新縮放到 0–1），在「設定」可以調整死區與 expo 曲線。
+搖桿死區預設 0.12（死區外重新縮放到 0–1），在「設定」可以調整死區與 expo 曲線、**高度上限**與**低電量自動降落**門檻（這兩項由機長分頁送到後端執行）。
 
 ### 鍵盤備援（手把故障時用）
 
@@ -239,6 +239,7 @@ land
 | 連線中斷 | 全畫面紅框＋大字，並說明是「與地面站程式」還是「與 Tello」的連線中斷 |
 | 每個指令 | toast 顯示結果（成功／失敗／逾時／被中斷／被拒絕） |
 | 起飛、降落、警告 | 手把震動；不支援震動時改成畫面邊框閃一下 |
+| 語音提示（設定可關） | 起飛、降落、緊急停槳、電量 30%／15%、溫度、連線中斷／恢復、手把中斷、高度上限、自動降落、任務完成／中止／失敗、跟隨模式的警示，用瀏覽器內建的 zh-TW 語音唸出；同一句 10 秒內不重複，危急訊息會打斷一般提示 |
 
 ### 多個分頁
 
@@ -262,6 +263,8 @@ land
 - 指令白名單；rc 數值一律夾在 −100 到 100（NaN、字串、超大值都安全處理）。
 - WebSocket 檢查 Origin，只接受 `http://localhost:8080` 與 `http://127.0.0.1:8080`。
 - 切到其他分頁時，瀏覽器會暫停送 rc → 0.5 秒後自動懸停。
+- **高度上限**（設定裡可開關，預設開、3.0 m）：高度到了上限就把「上升」的 rc 改成 0（下降、平移、轉向照常），HUD 顯示「已到高度上限」；任務腳本裡會超過上限的 `up`／`go` 直接失敗、不送出。由後端執行，不靠瀏覽器。
+- **低電量自動降落**（設定裡可開關，預設開、10%）：在空中電量 ≤ 門檻 → 後端立刻送 `land` 並通報；仍在空中每 5 秒重送。
 
 ---
 
@@ -628,7 +631,7 @@ web/                      前端（無 build step，原生 ES modules）
   css/tokens.css          色彩與字級 token（WCAG AA 已由測試驗證）
   css/app.css  css/diag.css
   js/main.js              主程式：輸入 → rc 30 Hz、遙測 → 畫面、警示、動作
-  js/ws.js  gamepad.js  keyboard.js  curve.js  video.js  hud.js
+  js/ws.js  gamepad.js  keyboard.js  curve.js  video.js  hud.js  voice.js（語音提示）  track.js（航跡推算）
   js/preflight.js  toast.js  recorder.js  settings.js  diag.js
 sim/
   mock_tello.py           模擬 Tello
@@ -656,7 +659,7 @@ python -m pytest
 
 - `tests/unit`：rc 夾限、白名單、狀態封包解析、電量估算、斷訊懸停／自動降落時序（假時鐘）、ask 期間暫停 rc、land 打斷 ask、重連、結束時降落、H.264 分片重組（含真實 x264 串流）、Origin 檢查、單一機長、飛行紀錄（切趟、摘要、CSV／JSON、API）、任務腳本（解析、範圍、執行、搖桿／降落中止、失敗即停）、WCAG 對比。
 - `tests/integration`：子行程啟動 `python -m gcs` ＋模擬器，驗證起飛、影像（WebCodecs 與 MJPEG）、斷線 8 秒自動降落（實際時序）、Ctrl+Break 結束時降落。
-- `tests/js`：跟隨模式的純邏輯，用 Node 內建的 `node --test`（`tests/unit/test_js.py` 會自動呼叫；沒裝 Node 就跳過）。
+- `tests/js`：跟隨模式、語音提示、航跡推算的純邏輯，用 Node 內建的 `node --test`（`tests/unit/test_js.py` 會自動呼叫；沒裝 Node 就跳過）。
 - `tests/e2e/test_follow.py`：用合成的人取代偵測模型、在模擬器上跑完整閉迴路；另外在 Edge 載入真的 MediaPipe 模型偵測一張真人照片（MediaPipe 官方範例圖，第一次執行時下載到 `.pytest_cache`，離線就跳過）。
 - `tests/e2e`：Playwright 使用本機已安裝的 **Edge**（Playwright 內建的 Chromium 沒有 H.264 解碼器）。改用 Chrome：設環境變數 `E2E_CHANNEL=chrome` 後再執行。
 

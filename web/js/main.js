@@ -8,7 +8,9 @@ import { evaluatePreflight, shortId } from './preflight.js';
 import { Recorder, snapshot } from './recorder.js';
 import { DEFAULTS, loadSettings, saveSettings, sanitize } from './settings.js';
 import { toast } from './toast.js';
+import { Track, drawTrack } from './track.js';
 import { VideoPlayer } from './video.js';
+import { createVoice } from './voice.js';
 import { ControlSocket } from './ws.js';
 
 const $ = (id) => document.getElementById(id);
@@ -19,19 +21,23 @@ const setIcon = (svgEl, level) => {
 };
 
 let settings = loadSettings();
+// 語音提示：眼睛盯著無人機時也聽得到；同一句 10 秒內不重複，danger 會打斷 warn
+const voice = createVoice();
+voice.enabled = settings.voice;
+const say = (level, text) => voice.speak(level, text);
 
 const S = {
   role: 'observer', hasPilot: false, sim: false, tel: null, everTello: false,
   rc: [0, 0, 0, 0], speed: 'normal', src: '無', pad: { connected: false, id: '', mapping: '', held: () => false },
   centered: true, padId: '', videoOn: false, pf: null,
   batLevel: 'none', tempLevel: 'none', linkAlarm: false, lastDangerBuzz: 0, hiddenAt: 0,
-  config: { flip_min_battery: 50 }, mission: null, missionExample: '',
+  config: { flip_min_battery: 50 }, mission: null, missionExample: '', limitsSent: '',
 };
 
 // =============================================================== 連線
 const sock = new ControlSocket('/ws/control', {
   onState: (st) => {
-    if (st === 'open') addLog('ok', '已連上本機地面站程式');
+    if (st === 'open') { addLog('ok', '已連上本機地面站程式'); S.limitsSent = ''; }
     if (st === 'closed' && sock.everOpen) addLog('danger', '與本機地面站程式的連線中斷');
     render();
   },
@@ -51,14 +57,15 @@ const sock = new ControlSocket('/ws/control', {
         break;
       case 'event':
         addLog(m.level, m.msg, m.ts);
-        if (m.code === 'auto_land' || m.code === 'silenced') { toast('danger', '自動降落', m.msg); buzz('danger'); }
+        if (m.code === 'auto_land' || m.code === 'silenced') { toast('danger', '自動降落', m.msg); buzz('danger'); say('danger', '控制中斷，自動降落'); }
         else if (m.code === 'link_lost') buzz('danger');
-        else if (m.code === 'link_ok') toast('ok', 'Tello 已連線', m.msg);
+        else if (m.code === 'link_ok') { toast('ok', 'Tello 已連線', m.msg); say('ok', 'Tello 已連線'); }
         else if (m.code === 'pilot_lost' && S.role !== 'pilot') toast('warn', '機長離線', m.msg);
         else if (m.code === 'flight_done') onFlightDone(m);
-        else if (m.code === 'mission_done') { toast('ok', '任務完成', m.msg); buzz('tap'); }
-        else if (m.code === 'mission_aborted') { toast('warn', '任務已中止', m.msg); buzz('warn'); }
-        else if (m.code === 'mission_error') { toast('danger', '任務失敗，已停下', m.msg); buzz('warn'); }
+        else if (m.code === 'low_bat_land') { toast('danger', '低電量自動降落', m.msg); buzz('danger'); say('danger', '電量過低，自動降落'); }
+        else if (m.code === 'mission_done') { toast('ok', '任務完成', m.msg); buzz('tap'); say('ok', '任務完成'); }
+        else if (m.code === 'mission_aborted') { toast('warn', '任務已中止', m.msg); buzz('warn'); say('warn', '任務已中止'); }
+        else if (m.code === 'mission_error') { toast('danger', '任務失敗，已停下', m.msg); buzz('warn'); say('danger', '任務失敗，已停下'); }
         break;
       case 'mission':
         S.mission = m;
@@ -91,7 +98,9 @@ async function runCmd(cmd) {
   const extra = r.kind === 'ok' || r.kind === 'sent' ? '' : (r.resp || '').replace(/^denied\s*/, '');
   toast(level, `${LABEL[cmd] || cmd}：${word}`, extra);
   if (r.hint) showHint(r.hint);
-  if (cmd === 'takeoff' && r.kind === 'ok') buzz('takeoff');
+  if (cmd === 'takeoff' && r.kind === 'ok') { buzz('takeoff'); voice.forget('起飛'); say('ok', '起飛'); }
+  if (cmd === 'land' && r.kind === 'sent') { voice.forget('降落'); say('ok', '降落'); }
+  if (cmd === 'emergency' && r.kind === 'sent') { voice.forget('緊急停槳'); say('danger', '緊急停槳'); }
   if (r.kind === 'error' || r.kind === 'timeout') buzz('warn');
   return r;
 }
@@ -195,7 +204,11 @@ const follow = new FollowMode({
   isPilot: () => isPilot(),
   hasVideo: () => S.videoOn && player.hasFrame,
   frameCount: () => player.frames,
-  notify: (level, title, text) => { toast(level, title, text || ''); if (level !== 'info') addLog(level, `跟隨：${title}${text ? `（${text}）` : ''}`); },
+  notify: (level, title, text) => {
+    toast(level, title, text || '');
+    if (level !== 'info') addLog(level, `跟隨：${title}${text ? `（${text}）` : ''}`);
+    if (level === 'warn' || level === 'danger') say(level, title);
+  },
   buzz: (p) => buzz(p),
   command: (c) => runCmd(c),
   downOrient: () => ({ edge: settings.downEdge, mirror: settings.downMirror }),
@@ -313,6 +326,7 @@ function inputTick() {
   } else if (!p.connected && S.padId) {
     S.padId = '';
     toast('danger', '手把已中斷', S.tel && S.tel.flying ? '改用鍵盤控制，或立即降落（L）' : '重新插上或按任一鍵');
+    if (S.tel && S.tel.flying) say('danger', '手把中斷');
     addLog('danger', '手把中斷');
   }
 
@@ -395,14 +409,15 @@ function render() {
   $('batRemain').textContent = bat === null ? '剩餘 --:--'
     : `${t.remaining_measured ? '剩餘' : '預估'} ${fmtTime(t.remaining_s)}`;
   if (bl !== S.batLevel) {
-    if (bl === 'warn' && S.batLevel !== 'danger') { toast('warn', `電量 ${bat}%`, '請準備降落'); buzz('warn'); addLog('warn', `電量 ${bat}%`); }
+    if (bl === 'warn' && S.batLevel !== 'danger') { toast('warn', `電量 ${bat}%`, '請準備降落'); buzz('warn'); addLog('warn', `電量 ${bat}%`); say('warn', `電量 ${bat}%，請準備降落`); }
     if (bl === 'danger') {
       toast('danger', `電量 ${bat}%：立即降落`, ''); buzz('danger'); S.lastDangerBuzz = performance.now(); addLog('danger', `電量 ${bat}%`);
+      say('danger', `電量 ${bat}%，立即降落`);
       if (follow.enabled) follow.disable('電量過低，已自動關閉跟隨模式');
     }
     S.batLevel = bl;
   } else if (bl === 'danger' && t.flying && performance.now() - S.lastDangerBuzz > 20000) {
-    buzz('danger'); S.lastDangerBuzz = performance.now();
+    buzz('danger'); S.lastDangerBuzz = performance.now(); say('danger', `電量 ${bat}%，立即降落`);
   }
 
   // ---- 飛行時間、Wi-Fi、溫度、速度
@@ -419,7 +434,7 @@ function render() {
   if (tl !== 'warn') $('stTemp').querySelector('.stat-icon use').setAttribute('href', '#i-temp');
   $('tempVal').textContent = temp === null ? '--' : String(temp);
   if (tl !== S.tempLevel) {
-    if (tl === 'warn') { toast('warn', `溫度 ${temp}°C 過高`, '盡快降落、關機散熱'); buzz('warn'); addLog('warn', `溫度 ${temp}°C`); }
+    if (tl === 'warn') { toast('warn', `溫度 ${temp}°C 過高`, '盡快降落、關機散熱'); buzz('warn'); addLog('warn', `溫度 ${temp}°C`); say('warn', '機身溫度過高'); }
     S.tempLevel = tl;
   }
   $('modeVal').textContent = SPEED[S.speed].label;
@@ -461,6 +476,8 @@ function render() {
   $('linkVideo').textContent = t && t.video ? `${t.video.fps} fps · ${Math.round(t.video.kbps)} kbps` : '--';
 
   updateHud(connected ? t : null);
+  sendLimits();
+  renderTrack(connected ? t : null);
   renderFollow();
   renderAlerts(t, connected, bl, bat, tl, temp);
   renderLinkAlarm(t, wsOpen);
@@ -492,6 +509,7 @@ function renderAlerts(t, connected, bl, bat, tl, temp) {
   if (bl === 'danger') list.push(['danger', `電量 ${bat}%：立即降落`]);
   else if (bl === 'warn') list.push(['warn', `電量 ${bat}%：準備降落`]);
   if (tl === 'warn') list.push(['warn', `機身溫度 ${temp}°C 過高`]);
+  if (connected && t.ceiling_hit && t.limits) { list.push(['warn', `已到高度上限 ${(t.limits.ceiling / 100).toFixed(1)} m，不再上升`]); say('warn', '已到高度上限'); }
   if (S.pad && !S.pad.connected && t && t.flying && isPilot()) list.push(['warn', '手把中斷：鍵盤 WASD／方向鍵控制，L 降落']);
   const key = JSON.stringify(list);
   if ($('hudAlerts').dataset.key !== key) {
@@ -525,8 +543,8 @@ function renderLinkAlarm(t, wsOpen) {
   if (on !== S.linkAlarm) {
     S.linkAlarm = on;
     el.hidden = !on;
-    if (on) buzz('danger');
-    if (!on && S.everTello) toast('ok', '連線已恢復');
+    if (on) { buzz('danger'); voice.forget('連線中斷'); say('danger', '連線中斷'); }
+    if (!on && S.everTello) { toast('ok', '連線已恢復'); voice.forget('連線已恢復'); say('ok', '連線已恢復'); }
   }
   if (!on) return;
   if (wsLost) {
@@ -536,6 +554,34 @@ function renderLinkAlarm(t, wsOpen) {
     $('alarmTitle').textContent = '與 Tello 的連線中斷';
     $('alarmText').textContent = `已 ${Math.min(999, Math.round(t.state_age))} 秒沒收到狀態封包，正在自動重連。確認電腦 Wi-Fi 仍連在 TELLO-XXXXXX；換電池時這是正常的。`;
   }
+}
+
+// =============================================================== 航跡（速度×航向推算，起飛歸零）
+const track = new Track();
+const trackCanvas = $('trackCanvas');
+let trackColors = null;
+function dirWord(b) {
+  const a = Math.abs(b), side = b > 0 ? '右' : '左';
+  if (a < 20) return '前方';
+  if (a < 70) return `${side}前方`;
+  if (a < 110) return `${side}方`;
+  if (a < 160) return `${side}後方`;
+  return '後方';
+}
+function renderTrack(t) {
+  track.update(t, performance.now());
+  if (!trackColors) {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (n, d) => (cs.getPropertyValue(n) || d).trim();
+    trackColors = { bg: v('--surface-3', '#0E1419'), grid: v('--border', '#1F2A33'), path: v('--accent', '#5CB3FF'),
+      home: v('--ok', '#3DDC84'), drone: v('--text', '#FFFFFF'), text: v('--text-3', '#8A98A6') };
+  }
+  const ctx = trackCanvas.getContext('2d');
+  if (ctx) drawTrack(ctx, track, { w: trackCanvas.width, h: trackCanvas.height, colors: trackColors });
+  const flown = track.points.length > 1 || track.dist > 0;
+  const hm = track.home();
+  $('trackHome').textContent = flown ? `${hm.dist.toFixed(1)} m · 起點在${dirWord(hm.bearing)}` : '--';
+  $('trackDist').textContent = flown ? `${track.dist.toFixed(1)} m` : '--';
 }
 
 // =============================================================== 任務腳本
@@ -637,7 +683,7 @@ function onFlightDone(m, quiet) {
   $('flightRow').hidden = false;
   $('flightSummary').textContent = m.msg;
   $('flightCsv').href = `/api/flightlog.csv?flight=${f.n}`;
-  if (!quiet) toast('ok', '飛行結束', `${m.msg}。右側可下載這趟的紀錄（CSV）`, 9000);
+  if (!quiet) { toast('ok', '飛行結束', `${m.msg}。右側可下載這趟的紀錄（CSV）`, 9000); say('ok', '飛行結束'); voice.forget('飛行結束'); }
 }
 
 // =============================================================== 事件紀錄
@@ -674,13 +720,30 @@ const form = $('settingsForm');
 function fillSettings() {
   form.deadzone.value = settings.deadzone; form.expo.value = settings.expo; form.tempWarn.value = settings.tempWarn;
   form.videoMode.value = settings.videoMode; form.vibration.checked = settings.vibration; form.keyboard.checked = settings.keyboard;
+  form.voice.checked = settings.voice;
   form.downEdge.value = settings.downEdge; form.downMirror.checked = settings.downMirror;
+  form.ceiling.value = settings.ceiling; form.lowBatLand.value = settings.lowBatLand;
+  form.ceilingOn.checked = settings.ceilingOn; form.lowBatLandOn.checked = settings.lowBatLandOn;
+  form.ceiling.disabled = !settings.ceilingOn; form.lowBatLand.disabled = !settings.lowBatLandOn;
   settingsLabels();
+}
+
+const effectiveLimits = () => ({ ceiling: settings.ceilingOn ? settings.ceiling : 0, low_bat: settings.lowBatLandOn ? settings.lowBatLand : 0 });
+
+// 飛行限制由後端執行（高度上限擋上升、低電量自動降落）；機長分頁把設定送過去，變了才送
+function sendLimits() {
+  if (!isPilot() || sock.state !== 'open') return;
+  const lim = effectiveLimits();
+  const key = `${lim.ceiling}:${lim.low_bat}`;
+  if (S.limitsSent === key) return;
+  if (sock.send({ t: 'limits', ...lim })) S.limitsSent = key;
 }
 function settingsLabels() {
   $('setDzVal').textContent = Number(settings.deadzone).toFixed(2);
   $('setExpoVal').textContent = Number(settings.expo).toFixed(2);
   $('setTempVal').textContent = `${settings.tempWarn}°C`;
+  $('setCeilVal').textContent = settings.ceilingOn ? `${(settings.ceiling / 100).toFixed(1)} m` : '關閉';
+  $('setLowBatVal').textContent = settings.lowBatLandOn ? `${settings.lowBatLand}%` : '關閉';
   let d = '';
   for (let i = 0; i <= 50; i++) {
     const x = i / 50;
@@ -693,13 +756,17 @@ function settingsLabels() {
 form.addEventListener('input', () => {
   settings = sanitize({
     deadzone: form.deadzone.value, expo: form.expo.value, tempWarn: form.tempWarn.value,
-    videoMode: form.videoMode.value, vibration: form.vibration.checked, keyboard: form.keyboard.checked,
+    videoMode: form.videoMode.value, vibration: form.vibration.checked, keyboard: form.keyboard.checked, voice: form.voice.checked,
     downEdge: form.downEdge.value, downMirror: form.downMirror.checked,
+    ceiling: form.ceiling.value, lowBatLand: form.lowBatLand.value,
+    ceilingOn: form.ceilingOn.checked, lowBatLandOn: form.lowBatLandOn.checked,
   });
+  form.ceiling.disabled = !settings.ceilingOn; form.lowBatLand.disabled = !settings.lowBatLandOn;
+  voice.enabled = settings.voice;
   if (!saveSettings(settings)) toast('warn', '設定無法儲存', '瀏覽器封鎖了 localStorage；重新整理後會恢復預設');
   settingsLabels();
 });
-$('btnResetSettings').addEventListener('click', () => { settings = { ...DEFAULTS }; saveSettings(settings); fillSettings(); });
+$('btnResetSettings').addEventListener('click', () => { settings = { ...DEFAULTS }; saveSettings(settings); fillSettings(); voice.enabled = settings.voice; });
 settingsLabels();
 
 // =============================================================== 按鈕
@@ -766,5 +833,5 @@ if (!window.isSecureContext) {
 }
 
 // 給 E2E 測試讀取狀態（不影響功能）
-window.__gcs = { S, get settings() { return settings; }, sock, player, follow, openMission, runMission };
+window.__gcs = { S, get settings() { return settings; }, sock, player, follow, openMission, runMission, voice, track };
 render();

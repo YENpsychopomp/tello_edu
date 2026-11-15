@@ -38,6 +38,11 @@ FAKE_PAD = """
   Object.defineProperty(Navigator.prototype, 'getGamepads', {
     configurable: true, value: () => [window.__padOn ? window.__pad : null, null, null, null] });
   window.__btn = (i, v) => { window.__pad.buttons[i] = { pressed: !!v, touched: !!v, value: v ? 1 : 0 }; };
+  // 假的語音合成：記下唸了什麼
+  window.__spoken = [];
+  window.SpeechSynthesisUtterance = class { constructor(t) { this.text = t; } };
+  Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: {
+    speak(u) { window.__spoken.push(u.text); if (u.onend) setTimeout(() => u.onend(), 50); }, cancel() {}, getVoices() { return []; } } });
   window.__axes = (a) => { window.__pad.axes = a; };
 })();
 """
@@ -153,6 +158,7 @@ def test_a_takeoff_b_land(browser, stack):
     press(page, B)
     wait_cmd(stack, "land")
     page.wait_for_function("document.querySelector('#toasts').textContent.includes('降落：已送出')")
+    page.wait_for_function("window.__spoken.includes('起飛') && window.__spoken.includes('降落')")   # 語音提示
     assert errors == []
     page.context.close()
 
@@ -469,6 +475,101 @@ def test_mission_script_runs_and_stick_aborts(browser, stack):
     assert page.evaluate("window.__gcs.S.tel.flying") is True       # 還在空中、由人接手
     press(page, B)
     wait_cmd(stack, "land")
+    assert errors == []
+    page.context.close()
+
+
+# ---------------------------------------------------------------- 飛行限制（設定 → 後端）
+def test_limits_ceiling_and_low_battery_autoland(browser, stack):
+    page, errors = open_page(browser)
+    page.wait_for_function("window.__gcs.S.tel.limits && window.__gcs.S.tel.limits.ceiling === 300 && window.__gcs.S.tel.limits.low_bat === 10")
+    page.click("#btnSettings")
+    page.wait_for_selector("#dlgSettings[open]")
+    ceil = page.locator("#settingsForm [name=ceiling]")
+    ceil.fill("150"); ceil.dispatch_event("input")
+    page.wait_for_function("window.__gcs.S.tel.limits.ceiling === 150")
+    assert "1.5 m" in page.locator("#setCeilVal").inner_text()
+    # 開關：關掉低電量自動降落 → 後端收到 0；再打開並調到 12
+    lbOn = page.locator("#settingsForm [name=lowBatLandOn]")
+    lbOn.uncheck(); lbOn.dispatch_event("input")
+    page.wait_for_function("window.__gcs.S.tel.limits.low_bat === 0")
+    assert "關閉" in page.locator("#setLowBatVal").inner_text()
+    assert page.locator("#settingsForm [name=lowBatLand]").is_disabled()
+    lbOn.check(); lbOn.dispatch_event("input")
+    page.wait_for_function("window.__gcs.S.tel.limits.low_bat === 10")
+    lb = page.locator("#settingsForm [name=lowBatLand]")
+    lb.fill("12"); lb.dispatch_event("input")
+    page.wait_for_function("window.__gcs.S.tel.limits.low_bat === 12")
+    # 高度上限的開關：關掉 → 0；再打開回到 150
+    cOn = page.locator("#settingsForm [name=ceilingOn]")
+    cOn.uncheck(); cOn.dispatch_event("input")
+    page.wait_for_function("window.__gcs.S.tel.limits.ceiling === 0")
+    assert "關閉" in page.locator("#setCeilVal").inner_text()
+    cOn.check(); cOn.dispatch_event("input")
+    page.wait_for_function("window.__gcs.S.tel.limits.ceiling === 150")
+    page.keyboard.press("Escape")
+    page.wait_for_selector("#dlgSettings", state="hidden")
+    page.wait_for_function("document.querySelector('#eventLog').textContent.includes('高度上限 150 cm')")
+    # 起飛後全力上升：到 1.5 m 就停住，HUD 顯示已到上限
+    press(page, A)
+    wait_cmd(stack, "takeoff")
+    page.wait_for_function("window.__gcs.S.tel.flying === true", timeout=5000)
+    for _ in range(100):
+        if stack.mock.w.flying and stack.mock.w.target_h is None:
+            break
+        time.sleep(0.05)
+    page.evaluate("window.__axes([0, -1, 0, 0])")             # 左搖桿往上 = 上升
+    page.wait_for_function("document.querySelector('#hudAlerts').textContent.includes('高度上限')", timeout=8000)
+    time.sleep(0.6)
+    assert 150 <= stack.mock.w.h <= 165, stack.mock.w.h
+    assert stack.mock.w.rc[2] == 0 and page.evaluate("window.__gcs.S.rc[2]") > 0
+    page.evaluate("window.__axes([0, 0, 0, 0])")
+    # 電量掉到門檻 → 地面站自動降落
+    stack.mock.w.bat = 12
+    page.wait_for_function("document.querySelector('#toasts').textContent.includes('低電量自動降落')", timeout=5000)
+    wait_cmd(stack, "land")
+    assert "12%" in page.locator("#eventLog").inner_text()
+    page.wait_for_function("window.__spoken.includes('已到高度上限') && window.__spoken.includes('電量過低，自動降落')")
+    # 設定裡關掉語音 → 不再唸
+    page.evaluate("window.__gcs.voice.enabled = false")
+    n = page.evaluate("window.__spoken.length")
+    page.evaluate("window.__gcs.voice.forget('降落')")
+    press(page, B)
+    page.wait_for_timeout(300)
+    assert page.evaluate("window.__spoken.length") == n
+    assert errors == []
+    page.context.close()
+
+
+def test_track_dead_reckoning(browser, stack):
+    """起飛後往前飛：航跡圖累積位置、顯示離起點距離與方位；降落再起飛會歸零。"""
+    page, errors = open_page(browser)
+    assert page.locator("#trackHome").inner_text() == "--"
+    press(page, A)
+    wait_cmd(stack, "takeoff")
+    page.wait_for_function("window.__gcs.S.tel.flying === true", timeout=5000)
+    page.evaluate("window.__axes([0, 0, 0, -0.8])")        # 往前（模擬器 yaw 0 = 北）
+    page.wait_for_function("window.__gcs.track.y > 0.3", timeout=5000)
+    page.evaluate("window.__axes([0, 0, 0, 0])")
+    page.wait_for_timeout(300)
+    tr = page.evaluate("({x: window.__gcs.track.x, y: window.__gcs.track.y, n: window.__gcs.track.points.length, d: window.__gcs.track.dist})")
+    assert abs(tr["x"]) < 0.05 and tr["y"] > 0.3 and tr["n"] >= 3 and tr["d"] >= tr["y"] - 1e-6, tr
+    home = page.locator("#trackHome").inner_text()
+    assert "起點在後方" in home and " m" in home, home
+    assert page.locator("#trackDist").inner_text() != "--"
+    press(page, B)
+    wait_cmd(stack, "land")
+    page.wait_for_function("window.__gcs.S.tel.flying === false", timeout=8000)
+    assert page.evaluate("window.__gcs.track.y") > 0.3           # 落地後保留航跡
+    assert errors == []
+    page.context.close()
+
+
+def test_settings_dialog_screenshot(browser, stack):
+    page, errors = open_page(browser)
+    page.click("#btnSettings")
+    page.wait_for_selector("#dlgSettings[open]")
+    page.screenshot(path=str(SHOTS / "settings-1280x720.png"))
     assert errors == []
     page.context.close()
 

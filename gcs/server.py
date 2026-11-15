@@ -81,7 +81,8 @@ class ControlHub:
                       "mission": self.mission.status(), "mission_example": MISSION_EXAMPLE,
                       "config": {"hover_after": config.HOVER_AFTER, "land_after": config.LAND_AFTER,
                                  "flip_min_battery": FLIP_MIN_BATTERY,
-                                 "land_max_tries": config.LAND_MAX_TRIES}})
+                                 "land_max_tries": config.LAND_MAX_TRIES,
+                                 "ceiling_max": config.CEILING_MAX, "low_bat_max": config.LOW_BAT_LAND_MAX}})
 
     async def leave(self, c: Client) -> None:
         self.clients.discard(c)
@@ -141,6 +142,14 @@ class ControlHub:
             asyncio.ensure_future(self._run_cmd(c, msg.get("id"), cmd))   # 不阻塞 rc 的接收
         elif t == "mission":
             await self._mission_op(c, msg)
+        elif t == "limits":
+            if is_pilot:
+                before = dict(self.link.limits)
+                after = self.link.set_limits(msg)
+                if after != before:
+                    self.event("info", "limits", "飛行限制："
+                               + (f"高度上限 {after['ceiling']} cm" if after["ceiling"] else "高度上限關閉")
+                               + "、" + (f"電量 ≤ {after['low_bat']}% 自動降落" if after["low_bat"] else "低電量自動降落關閉"))
         elif t == "takeover":
             await self.takeover(c)
         elif t == "ping":

@@ -88,6 +88,9 @@ class TelloLink:
         self._control_lost = False
         self._was_connected = False
         self.sent_log: list[str] = []      # 最近送出的非 rc 指令（給測試與診斷）
+        self.limits = {"ceiling": config.CEILING_DEFAULT, "low_bat": config.LOW_BAT_LAND_DEFAULT}
+        self.ceiling_hit_at = -1e9         # 最近一次因高度上限擋掉「上升」的時間
+        self._lowbat_at = -1e9             # 最近一次低電量自動降落
 
     # ------------------------------------------------------------ 啟動 / 結束
     async def start(self) -> None:
@@ -177,6 +180,7 @@ class TelloLink:
         bat = st.get("bat")
         self.battery.update(now, bat if isinstance(bat, int) else None, self.flying())
         self.flightlog.sample(st, self.rc_sent, self.flying(), now)
+        self._check_low_battery(now, bat)
         if self.sdk_ok and not self._was_connected:
             self._was_connected = True
             log.info("已連上 Tello（SDK 模式，狀態封包正常）")
@@ -285,6 +289,44 @@ class TelloLink:
             self.wifi = parse_wifi(resp)
         return resp
 
+    # ------------------------------------------------------------ 飛行限制
+    def set_limits(self, raw: object) -> dict:
+        """高度上限（0 或 50–1000 cm）與低電量自動降落（0–30%）；壞資料保留原值。"""
+        d = raw if isinstance(raw, dict) else {}
+
+        def num(v, lo, hi, cur, zero_ok=True):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+                return cur
+            v = int(round(v))
+            if v <= 0:
+                return 0 if zero_ok else cur
+            return max(lo, min(hi, v))
+        self.limits = {
+            "ceiling": num(d.get("ceiling"), config.CEILING_MIN, config.CEILING_MAX, self.limits["ceiling"]),
+            "low_bat": num(d.get("low_bat"), 1, config.LOW_BAT_LAND_MAX, self.limits["low_bat"]),
+        }
+        return dict(self.limits)
+
+    def _apply_ceiling(self, rc: tuple[int, int, int, int], now: float) -> tuple[int, int, int, int]:
+        c = self.limits["ceiling"]
+        if c and rc[2] > 0 and self.height() >= c:
+            self.ceiling_hit_at = now
+            return (rc[0], rc[1], 0, rc[3])
+        return rc
+
+    def _check_low_battery(self, now: float, bat: object) -> None:
+        lb = self.limits["low_bat"]
+        if not lb or not isinstance(bat, int) or bat > lb or not self.flying():
+            return
+        if now - self._lowbat_at < config.LOW_BAT_RESEND:
+            return
+        self._lowbat_at = now
+        self.immediate("land")
+        self.flightlog.command("land", f"low-bat {bat}%")
+        msg = f"電量 {bat}% ≤ {lb}% → 自動降落"
+        log.warning(msg)
+        self.on_event("danger", "low_bat_land", msg)
+
     # ------------------------------------------------------------ 來自 UI
     def set_rc(self, vals: object) -> None:
         self.rc = clamp_rc(vals)
@@ -358,8 +400,9 @@ class TelloLink:
                     self.on_event("danger", "silenced", msg)
                 if d.rc is not None:
                     self._silence_logged = False
-                    self.send(rc_command(d.rc))
-                    self.rc_sent = d.rc
+                    rc = self._apply_ceiling(d.rc, t0)
+                    self.send(rc_command(rc))
+                    self.rc_sent = rc
             await asyncio.sleep(max(0.0, self.rc_period - (self.clock() - t0)))
 
     async def _wifi_loop(self) -> None:
@@ -396,4 +439,6 @@ class TelloLink:
             "rc_sent": list(self.rc_sent),
             "last": self.last,
             "flight_n": self.flightlog.current.n if self.flightlog.current else None,
+            "limits": dict(self.limits),
+            "ceiling_hit": now - self.ceiling_hit_at < 1.0,
         }

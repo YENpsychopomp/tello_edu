@@ -207,6 +207,12 @@
         <div class="kv"><span>狀態封包</span><b id="linkState">--</b></div>
         <div class="kv"><span>影像</span><b id="linkVideo">--</b></div>
       </section>
+      <section class="panel" id="trackPanel" aria-labelledby="trkTitle">
+        <h2 id="trkTitle">航跡（速度推算）</h2>
+        <canvas id="trackCanvas" width="236" height="150" aria-label="北朝上的航跡圖：起點、路徑、機身方向"></canvas>
+        <div class="kv"><span>離起點</span><b id="trackHome">--</b></div>
+        <div class="kv"><span>累計里程</span><b id="trackDist">--</b></div>
+      </section>
       <section class="panel panel-log">
         <h2>事件紀錄</h2>
         <div class="flight-row" id="flightRow" hidden>
@@ -366,6 +372,16 @@
     <svg class="curve" viewBox="0 0 100 100" aria-hidden="true"><path id="curvePath"/><path d="M0 100L100 0" class="curve-ref"/></svg>
     <label class="field"><span>溫度警告門檻 <b id="setTempVal"></b></span>
       <input type="range" name="tempWarn" min="60" max="95" step="1"></label>
+    <fieldset class="limit-set">
+      <label class="check"><input type="checkbox" name="ceilingOn"> 啟用高度上限 <b id="setCeilVal"></b></label>
+      <label class="field"><input type="range" name="ceiling" min="50" max="1000" step="50" aria-label="高度上限">
+        <small>到了上限就不再接受「上升」，下降與平移照常；任務腳本裡會超過的 up 會直接失敗</small></label>
+    </fieldset>
+    <fieldset class="limit-set">
+      <label class="check"><input type="checkbox" name="lowBatLandOn"> 啟用低電量自動降落 <b id="setLowBatVal"></b></label>
+      <label class="field"><input type="range" name="lowBatLand" min="5" max="30" step="1" aria-label="低電量自動降落門檻">
+        <small>在空中電量低於等於這個值 → 地面站自動送出降落（仍在空中每 5 秒重送）</small></label>
+    </fieldset>
     <label class="field"><span>影像解碼</span>
       <select name="videoMode">
         <option value="auto">自動（WebCodecs，失敗時改 MJPEG）</option>
@@ -382,6 +398,7 @@
       <small>開跟隨後按 <kbd>C</kbd> 切到下視鏡頭，手放到機身前方，畫面要顯示「手在機身前方」</small></label>
     <label class="check"><input type="checkbox" name="downMirror"> 下視鏡頭畫面左右鏡像</label>
     <label class="check"><input type="checkbox" name="vibration"> 手把震動回饋</label>
+    <label class="check"><input type="checkbox" name="voice"> 語音提示（起降、電量、連線、任務等用語音唸出）</label>
     <label class="check"><input type="checkbox" name="keyboard"> 啟用鍵盤控制</label>
     <div class="dlg-actions">
       <button type="button" class="btn" id="btnResetSettings">恢復預設</button>

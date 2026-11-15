@@ -200,6 +200,10 @@ class MissionRunner:
         if is_move(step.cmd) and not self.link.flying():
             step.resp = "不在空中"
             return False
+        over = self._exceeds_ceiling(step.cmd)
+        if over:
+            step.resp = over
+            return False
         resp = await self.link.command(step.cmd)
         step.resp = resp
         kind = classify(resp)
@@ -216,6 +220,27 @@ class MissionRunner:
                     break
                 await asyncio.sleep(0.1)
         return True
+
+    def _exceeds_ceiling(self, cmd: str) -> Optional[str]:
+        """up N／go … z 會超過高度上限 → 回錯誤訊息（不送出）。"""
+        limits = getattr(self.link, "limits", None) or {}
+        c = limits.get("ceiling") or 0
+        if not c:
+            return None
+        parts = cmd.split()
+        dz = 0
+        if parts[0] == "up":
+            dz = int(parts[1])
+        elif parts[0] == "go":
+            dz = int(parts[3])
+        elif parts[0] == "curve":
+            dz = max(int(parts[3]), int(parts[6]))
+        if dz <= 0:
+            return None
+        h = self.link.height() if hasattr(self.link, "height") else 0
+        if h + dz > c:
+            return f"會超過高度上限 {c} cm（目前 {h} cm，再升 {dz} cm）"
+        return None
 
     def _finish(self, state: str, reason: str) -> None:
         self.state = state

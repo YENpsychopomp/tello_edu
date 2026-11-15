@@ -10,6 +10,11 @@ export const DEFAULTS = Object.freeze({
   keyboard: true,
   downEdge: 'up',      // 下視鏡頭畫面哪一邊是機頭方向
   downMirror: false,   // 下視鏡頭畫面左右鏡像
+  voice: true,         // 語音提示（警示用 zh-TW 語音唸出）
+  ceilingOn: true,     // 啟用高度上限（由機長分頁送到後端執行）
+  ceiling: 300,        // 高度上限（cm）
+  lowBatLandOn: true,  // 啟用低電量自動降落
+  lowBatLand: 10,      // 電量 ≤ 這個百分比且在空中 → 後端自動降落
 });
 
 const num = (v, lo, hi, d) => (Number.isFinite(+v) ? Math.min(hi, Math.max(lo, +v)) : d);
@@ -25,6 +30,11 @@ export function sanitize(raw) {
     keyboard: typeof r.keyboard === 'boolean' ? r.keyboard : DEFAULTS.keyboard,
     downEdge: ['up', 'right', 'down', 'left'].includes(r.downEdge) ? r.downEdge : DEFAULTS.downEdge,
     downMirror: typeof r.downMirror === 'boolean' ? r.downMirror : DEFAULTS.downMirror,
+    voice: typeof r.voice === 'boolean' ? r.voice : DEFAULTS.voice,
+    ceilingOn: typeof r.ceilingOn === 'boolean' ? r.ceilingOn : DEFAULTS.ceilingOn,
+    ceiling: Math.round(num(r.ceiling, 50, 1000, DEFAULTS.ceiling)),
+    lowBatLandOn: typeof r.lowBatLandOn === 'boolean' ? r.lowBatLandOn : DEFAULTS.lowBatLandOn,
+    lowBatLand: Math.round(num(r.lowBatLand, 5, 30, DEFAULTS.lowBatLand)),
   };
 }
 
