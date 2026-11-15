@@ -1,12 +1,15 @@
 // 手勢（用手臂姿勢，不用手指）：無人機通常離人 2–5 m，手指在 960×720 畫面上只有十幾個像素，
 // 手指手勢辨識不可靠；手臂姿勢在這個距離很穩定。左右一律是「被拍的人自己的」左右。
 //
-//   舉右手過頭        → up       升高
-//   舉左手過頭        → down     降低
-//   雙手高舉過頭（Y） → farther  拉遠
+//   舉右手（有舉的意圖就算：手腕高於肩膀一截、在手肘上方、手臂偏直立，不必舉過頭） → up       升高
+//   舉左手（同上）    → down     降低
+//   雙手舉起（Y）     → farther  拉遠
 //   雙手在胸前交叉    → closer   靠近
-//   雙手側平舉（T）   → pause    暫停／恢復跟隨（暫停時原地懸停，仍持續追蹤）
+//   雙手側平舉（T：手臂接近水平、伸出去） → pause    暫停／恢復跟隨（暫停時原地懸停，仍持續追蹤）
 //   手臂向前伸＋手掌張開 → palm 停到手上（需要手部模型判斷手掌張開，見 palm.js）
+//
+// 判斷用角度而不是絕對高度：舉手＝手臂比較接近直立（> 約 40°），T 字＝接近水平（< 約 27°），
+// 所以斜斜舉到一半也算舉手、略高於肩的側平舉還是 T 字，兩者不會互相誤判。
 import { LM, visible } from './geometry.js';
 
 export const GESTURES = {
@@ -33,8 +36,13 @@ export function classifyPose(lms, aspect = 4 / 3) {
 
   const lw = P(LM.L_WRIST), rw = P(LM.R_WRIST), le = P(LM.L_ELBOW), re = P(LM.R_ELBOW);
   const lwOk = visible(lw), rwOk = visible(rw);
-  const above = (w, e) => w.y < headY - unit * 0.25 && (!visible(e) || e.y < shY);
-  const lUp = lwOk && above(lw, le), rUp = rwOk && above(rw, re);
+  // 舉手的意圖：手腕比肩膀高 0.3 單位以上、在手肘上方，而且手臂偏直立（垂直分量 > 橫向分量 × 0.85 ≈ 40° 以上）
+  const raised = (w, s, e) => {
+    const up = s.y - w.y, side = Math.abs(w.x - s.x) * aspect;
+    return up > unit * 0.3 && up > side * 0.85 && (!visible(e) || w.y < e.y);
+  };
+  const lUp = lwOk && raised(lw, ls, le), rUp = rwOk && raised(rw, rs, re);
+  void headY;
   // 手放下：手腕低於肩膀（看不到也算放下）
   const lDown = !lwOk || lw.y > shY + unit * 0.2;
   const rDown = !rwOk || rw.y > shY + unit * 0.2;
@@ -45,10 +53,13 @@ export function classifyPose(lms, aspect = 4 / 3) {
 
   if (lwOk && rwOk) {
     const midX = (ls.x + rs.x) / 2;
-    const out = (w, s, e) => Math.abs(w.y - s.y) < unit * 0.45
-      && Math.abs(w.x - s.x) * aspect > unit * 1.1
-      && Math.sign(w.x - midX) === Math.sign(s.x - midX)
-      && (!visible(e) || Math.abs(e.y - s.y) < unit * 0.45);
+    // T 字：手伸出去（橫向 > 0.8 單位）而且接近水平（垂直偏差 < 橫向的一半 ≈ 27° 以內），手肘也差不多在肩膀高度
+    const out = (w, s, e) => {
+      const side = Math.abs(w.x - s.x) * aspect;
+      return side > unit * 0.8 && Math.abs(w.y - s.y) < Math.max(unit * 0.25, side * 0.5)
+        && Math.sign(w.x - midX) === Math.sign(s.x - midX)
+        && (!visible(e) || Math.abs(e.y - s.y) < unit * 0.6);
+    };
     if (out(lw, ls, le) && out(rw, rs, re)) return 'pause';
 
     // 交叉：兩手腕都在肩膀到髖部之間、而且左右交換（左手腕跑到身體右側）
@@ -65,7 +76,7 @@ export function classifyPose(lms, aspect = 4 / 3) {
  * 升高／降低／拉遠／靠近維持不放會每 repeatMs 重複一次；暫停、停到手上必須放下手再做一次才會再觸發。
  */
 export class GestureLatch {
-  constructor({ holdMs = 600, repeatMs = 1100, minFrames = 4 } = {}) {
+  constructor({ holdMs = 500, repeatMs = 1100, minFrames = 3 } = {}) {
     Object.assign(this, { holdMs, repeatMs, minFrames });
     this.reset();
   }

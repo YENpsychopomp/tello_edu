@@ -40,13 +40,21 @@ test('手勢分類：五種手勢＋放下', () => {
   assert.equal(c({ l: 'up', r: 'up' }), 'farther');
   assert.equal(c({ l: 'cross', r: 'cross' }), 'closer');
   assert.equal(c({ l: 'out', r: 'out' }), 'pause');
+  // 有舉手的意圖就算：只舉到肩膀上方一截、斜斜舉都算
+  assert.equal(c({ r: 'half' }), 'up');
+  assert.equal(c({ l: 'half' }), 'down');
+  assert.equal(c({ r: 'slant' }), 'up');
+  assert.equal(c({ l: 'half', r: 'slant' }), 'farther');
+  // 側平舉略高於肩仍是 T 字，不會被當成雙手舉起
+  assert.equal(c({ l: 'outhigh', r: 'outhigh' }), 'pause');
   // 單手側舉不是任何手勢（避免指路、揮手時誤觸發）
   assert.equal(c({ l: 'out' }), null);
+  assert.equal(c({ l: 'outhigh' }), null);
   // 遠一點、偏一邊也一樣
   assert.equal(c({ r: 'up' }, { cx: 0.2, t: 0.1 }), 'up');
 });
 
-test('手勢要維持 0.6 秒以上才觸發；維持不放會重複；暫停不重複', () => {
+test('手勢要維持 0.5 秒以上才觸發；維持不放會重複；暫停不重複', () => {
   const L = new GestureLatch({ holdMs: 600, repeatMs: 1000, minFrames: 4 });
   const fired = [];
   for (let t = 0; t <= 2500; t += 80) { const g = L.feed('up', t); if (g) fired.push([g, t]); }
@@ -59,7 +67,7 @@ test('手勢要維持 0.6 秒以上才觸發；維持不放會重複；暫停不
   assert.equal(p.length, 1);
 });
 
-test('手勢：短暫揮過（< 0.6 秒）不觸發；偶爾一幀判斷失敗不會重來', () => {
+test('手勢：短暫揮過（< 0.5 秒）不觸發；偶爾一幀判斷失敗不會重來', () => {
   const L = new GestureLatch();
   let n = 0;
   for (let t = 0; t < 400; t += 80) if (L.feed('farther', t)) n++;

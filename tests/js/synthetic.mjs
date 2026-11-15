@@ -4,7 +4,8 @@ export const VSPAN = 1.055;
 
 /**
  * 合成一個面向鏡頭站立的人。cx＝軀幹中心 x、cy＝軀幹中心 y、t＝軀幹長度（影像高度單位）。
- * 面向鏡頭 → 人的「左」在畫面右邊。arms: { l, r } = 'down' | 'up' | 'out' | 'cross' | 'forward'
+ * 面向鏡頭 → 人的「左」在畫面右邊。arms: { l, r } = 'down' | 'up' | 'half' | 'slant' | 'out' | 'outhigh' | 'cross' | 'forward'
+ * 'half'：手只舉到肩膀上方一截（有舉的意圖，沒過頭）；'slant'：斜 45° 舉；'outhigh'：側平舉但略高於肩；
  * 'forward'：手臂朝鏡頭伸直（畫面上縮短、手腕的深度 z 比肩膀近）。
  */
 export function person({ cx = 0.5, cy = 0.5, t = 0.2, arms = {}, hips = true } = {}) {
@@ -22,6 +23,9 @@ export function person({ cx = 0.5, cy = 0.5, t = 0.2, arms = {}, hips = true } =
     const a = arms[side] || 'down', sx = sgn * sw / 2;
     if (a === 'down') { set(e, sx * 1.1, sh + t * 0.45); set(w, sx * 1.15, sh + t * 0.9); }
     if (a === 'up') { set(e, sx * 1.2, sh - t * 0.4); set(w, sx * 1.1, sh - t * 0.95); }
+    if (a === 'half') { set(e, sx * 1.4, sh + t * 0.05); set(w, sx * 1.3, sh - t * 0.4); }
+    if (a === 'slant') { set(e, sx + sgn * t * 0.35, sh - t * 0.3); set(w, sx + sgn * t * 0.6, sh - t * 0.7); }
+    if (a === 'outhigh') { set(e, sx + sgn * t * 0.6, sh - t * 0.12); set(w, sx + sgn * t * 1.2, sh - t * 0.3); }
     if (a === 'out') { set(e, sx + sgn * t * 0.6, sh + t * 0.02); set(w, sx + sgn * t * 1.2, sh + t * 0.05); }
     if (a === 'cross') { set(e, sx * 1.1, sh + t * 0.45); set(w, -sgn * sw * 0.25, sh + t * 0.35); }
     if (a === 'forward') {
