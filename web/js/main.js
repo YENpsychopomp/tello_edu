@@ -250,7 +250,8 @@ function renderFollow() {
   $('flwDist').textContent = f.dist === null ? '--' : `約 ${f.dist.toFixed(1)} m`;
   const framed = Number.isFinite(f.hTarget) && Math.abs(f.hTarget - f.sp.height) > 5 ? ` → ${Math.round(f.hTarget)} cm（保持手臂在畫面內）` : '';
   $('flwSp').textContent = f.spInit ? `${f.sp.dist.toFixed(1)} m／${f.sp.height} cm${framed}` : '起飛後鎖定';
-  $('flwFps').textContent = f.delegate || follow.fake ? `${f.fps} fps · ${f.delegate || '模擬'}` : '--';
+  const extra = [f.stalled ? '影像中斷' : '', f.why && f.why.includes('predicted') ? '預測中' : '', f.rejected ? `丟棄 ${f.rejected}` : ''].filter(Boolean);
+  $('flwFps').textContent = f.delegate || follow.fake ? `${f.fps} fps · ${f.delegate || '模擬'}${extra.length ? ` · ${extra.join(' · ')}` : ''}` : '--';
 }
 
 function setVideoUi(on) {

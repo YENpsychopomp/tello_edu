@@ -6,6 +6,8 @@ export function webCodecsAvailable() {
 }
 
 export class VideoPlayer {
+  static ERR_BURST = 6;
+
   constructor(canvas, img, { onStatus, onFirstFrame }) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false });
@@ -18,6 +20,7 @@ export class VideoPlayer {
     this.codec = null;
     this.waitKey = true;
     this.errors = 0;
+    this.errorTimes = [];       // 最近的解碼錯誤時間（10 秒視窗內超過 ERR_BURST 次才放棄 WebCodecs）
     this.frames = 0;
     this.hasFrame = false;
     this.ts = 0;
@@ -131,10 +134,19 @@ export class VideoPlayer {
   }
 
   _decoderError(e) {
+    // Wi-Fi 掉封包造成的壞幀是常態：丟掉到下一個關鍵幀為止，解碼器重建；
+    // 只有 10 秒內連續出錯超過 ERR_BURST 次（代表這台瀏覽器根本解不了）才退到 MJPEG
     this.errors++;
-    if (this.errors >= 3) { this._fallback(`WebCodecs 解碼錯誤（${e && e.message ? e.message : e}）`); return; }
+    const now = performance.now();
+    this.errorTimes = this.errorTimes.filter((t) => now - t < 10000);
+    this.errorTimes.push(now);
+    if (this.errorTimes.length > VideoPlayer.ERR_BURST || (!this.hasFrame && this.errors >= 3)) {
+      this._fallback(`WebCodecs 解碼錯誤（${e && e.message ? e.message : e}）`);
+      return;
+    }
     const codec = this.codec;
     this.codec = null;
+    this.waitKey = true;
     if (codec) this._configure(codec);
   }
 

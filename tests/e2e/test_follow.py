@@ -261,6 +261,26 @@ def test_follow_dropped_frames_keep_tracking_smoothly(browser, stack):
     page.context.close()
 
 
+def test_follow_low_detection_rate_still_converges(browser, stack):
+    """偵測只有約 4 fps（手機、CPU）：靠預測與降低增益仍能對準、不擺盪、不進 lost。"""
+    page, errors = _airborne_follow(browser, bearing=26)
+    page.evaluate("""() => {
+      // 每 250 ms 只有 40 ms 的視窗有「新畫面」→ 偵測約 4 fps（其餘時間 _loop 跳過偵測，和真的慢推論一樣）
+      window.__gcs.follow.fakeStall = () => (performance.now() % 250) > 40;
+      window.__maxYaw = 0; window.__minYaw = 0;
+      setInterval(() => { const y = window.__gcs.follow.rc[3]; window.__maxYaw = Math.max(window.__maxYaw, y); window.__minYaw = Math.min(window.__minYaw, y); }, 33);
+    }""")
+    page.wait_for_function("Math.abs(window.__cx(26) - 0.5) < 0.06", timeout=12000)
+    page.wait_for_timeout(1500)
+    s = st(page)
+    assert s["phase"] == "follow" and not s["search"]["active"] and not s["stalled"], s
+    assert s["detPeriod"] >= 180, s["detPeriod"]
+    assert abs(page.evaluate("window.__cx(26)") - 0.5) < 0.08
+    assert page.evaluate("window.__minYaw") > -20, page.evaluate("window.__minYaw")      # 沒有大幅反向擺
+    assert errors == []
+    page.context.close()
+
+
 def test_follow_auto_search_finds_target_again(browser, stack):
     """目標往右跑出畫面 → 1 秒後開始往右旋轉搜尋 → 看到同一個人（顏色相同）→ 恢復跟隨。"""
     page, errors = _airborne_follow(browser, bearing=0)
